@@ -2,5 +2,13 @@
 name = "teddy"
 version = "0.1.0"
 authors = ["Joe Neeman <joeneeman@gmail.com>"]
+license = "MIT/Apache-2.0"
 
 [dependencies]
+aho-corasick = "0.5.1"
+memchr = "0.1.9"
+simd = "0.1.0"
+
+[dev-dependencies]
+quickcheck = "0.3.1"
+
