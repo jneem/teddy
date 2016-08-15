@@ -7,7 +7,7 @@
 // except according to those terms.
 
 use simd::{bool8ix16, u8x16};
-use simd::x86::sse2::u64x2;
+use simd::x86::sse2::{Sse2Bool8ix16, u64x2};
 use simd::x86::ssse3::Ssse3U8x16;
 use std::fmt::Debug;
 use std::mem::transmute;
@@ -23,10 +23,13 @@ extern "platform-intrinsic" {
     fn simd_shuffle32<T, U>(x: T, y: T, idx: [u32; 32]) -> U;
     #[cfg(target_feature="avx2")]
     fn x86_mm256_shuffle_epi8(x: i8x32, y: i8x32) -> i8x32;
+    #[cfg(target_feature="avx2")]
+    fn x86_mm256_movemask_epi8(x: i8x32) -> i32;
 }
 
 pub trait TeddySIMDBool: Clone + Copy + Sized {
     fn any(self) -> bool;
+    fn move_mask(self) -> u32;
 }
 
 /// This trait contains all the SIMD operations necessary for implementing the Teddy algorithm.
@@ -53,7 +56,6 @@ pub trait TeddySIMD: BitAnd<Output=Self> + Clone + Copy + Debug + Shr<u8, Output
     /// Applies the function `f` to each of the `u64` values in this vector (beginning with the
     /// least significant). Returns the first non-`None` value that `f` returned.
     fn first_u64<T, F>(self, f: F) -> Option<T> where F: Fn(u64, usize) -> Option<T>;
-    //fn u64s(self) -> (u64, u64);
 
     /// Creates a new SIMD vector from the elements in `slice` starting at `offset`. `slice` must
     /// have at least the number of elements required to fill a SIMD vector.
@@ -116,6 +118,9 @@ impl TeddySIMD for u8x16 {
 impl TeddySIMDBool for bool8ix16 {
     #[inline]
     fn any(self) -> bool { bool8ix16::any(self) }
+
+    #[inline]
+    fn move_mask(self) -> u32 { Sse2Bool8ix16::move_mask(self) }
 }
 
 #[cfg(target_feature="avx2")]
@@ -180,6 +185,11 @@ impl TeddySIMD for u8x32 {
 impl TeddySIMDBool for bool8ix32 {
     #[inline]
     fn any(self) -> bool { bool8ix32::any(self) }
+
+    #[inline]
+    fn move_mask(self) -> u32 {
+        unsafe { transmute(x86_mm256_movemask_epi8(transmute(self))) }
+    }
 }
 
 #[cfg(test)]

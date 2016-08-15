@@ -333,6 +333,7 @@ References
 // TODO: Make the inner loop do aligned loads.
 
 use std::cmp;
+use aho_corasick::{Automaton, AcAutomaton, FullAcAutomaton};
 use teddy_simd::{TeddySIMD, TeddySIMDBool};
 
 /// Match reports match information.
@@ -359,6 +360,9 @@ pub struct Teddy<T: TeddySIMD> {
     buckets: Vec<Vec<usize>>,
     /// Our set of masks. There's one mask for each byte in the fingerprint.
     masks: Masks<T>,
+    /// An Aho-Corasick automaton, which we use for quickly testing for a match
+    /// after we've found a fingerprint.
+    ac: FullAcAutomaton<Vec<u8>>,
 }
 
 /// A list of masks. This has length equal to the length of the fingerprint.
@@ -398,10 +402,12 @@ impl<T: TeddySIMD> Teddy<T> {
             buckets[bucket].push(pati);
             masks.add(bucket as u8, pat);
         }
+
         Some(Teddy {
             pats: pats.to_vec(),
             buckets: buckets,
             masks: masks,
+            ac: FullAcAutomaton::new((AcAutomaton::new(pats.to_vec()))),
         })
     }
 
@@ -521,12 +527,15 @@ impl<T: TeddySIMD> Teddy<T> {
 
             prev0 = res0;
             prev1 = res1;
-            if res.ne(zero).any() {
+
+            let bitfield = res.ne(zero).move_mask();
+            if bitfield != 0 {
                 let pos = pos.checked_sub(2).unwrap();
-                if let Some(m) = self.verify_128(haystack, pos, res) {
+                if let Some(m) = self.verify_new(haystack, pos, res, bitfield) {
                     return Some(m);
                 }
             }
+
             pos += T::BLOCK_SIZE;
         }
         // The windowing above doesn't check the last two bytes in the last
@@ -536,12 +545,38 @@ impl<T: TeddySIMD> Teddy<T> {
         self.slow(haystack, pos.checked_sub(2).unwrap())
     }
 
+    fn verify_new(&self, haystack: &[u8], pos: usize, res: T, mut bitfield: u32) -> Option<Match> {
+        while bitfield != 0 {
+            // The next offset, relative to pos, where some fingerprint matched.
+            let byte_pos = bitfield.trailing_zeros();
+            bitfield &= !(1 << byte_pos);
+
+            // Offset relative to the beginning of the haystack.
+            let start = pos + byte_pos as usize;
+
+            // The bitfield telling us which patterns had fingerprints that match at this starting
+            // position.
+            let mut patterns = res.extract(byte_pos);
+            while patterns != 0 {
+                let bucket = patterns.trailing_zeros() as usize;
+                patterns &= !(1 << bucket);
+
+                // Actual substring search verification.
+                if let Some(m) = self.verify_bucket(haystack, bucket, start) {
+                    return Some(m);
+                }
+            }
+        }
+
+        None
+    }
+
     /// Runs the verification procedure on `res` (i.e., `C` from the module
     /// documentation), where the haystack block starts at `pos` in
     /// `haystack`.
     ///
     /// If a match exists, it returns the first one.
-    #[inline(always)]
+    #[inline(never)]
     fn verify_128(
         &self,
         haystack: &[u8],
@@ -622,27 +657,13 @@ impl<T: TeddySIMD> Teddy<T> {
     /// This is used when we don't have enough bytes in the haystack for our
     /// block based approach.
     fn slow(&self, haystack: &[u8], pos: usize) -> Option<Match> {
-        // TODO: Use Aho-Corasick, or otherwise adapt the block based approach
-        // to be capable of using smaller blocks.
-        let mut m = None;
-        for (pi, p) in self.pats.iter().enumerate() {
-            if let Some(i) = find_slow(p, &haystack[pos..]) {
-                let candidate = Match {
-                    pat: pi,
-                    start: pos + i,
-                    end: pos + i + p.len(),
-                };
-                match m {
-                    None => m = Some(candidate),
-                    Some(ref mut m) => {
-                        if candidate.start < m.start {
-                            *m = candidate;
-                        }
-                    }
-                }
+        self.ac.find(&haystack[pos..]).next().map(|m| {
+            Match {
+                pat: m.pati,
+                start: m.start + pos,
+                end: m.end + pos,
             }
-        }
-        m
+        })
     }
 }
 
@@ -757,9 +778,8 @@ pub fn find_slow(pattern: &[u8], haystack: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use simd::u8x16;
     use teddy128::Teddy;
-    use quickcheck::TestResult;
+    //use quickcheck::TestResult;
 
     #[cfg(target_feature="avx2")]
     use simd::x86::avx::u8x32;
@@ -768,14 +788,17 @@ mod tests {
     fn one_pattern() {
         let pats = vec![b"abc".to_vec()];
         let ted = Teddy::<u8x32>::new(&pats).unwrap();
-        //assert_eq!(ted.find(b"123abcxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx").unwrap().start, 3);
-        //assert_eq!(ted.find(b"xxxxxxxxxxxxxxabc123xxxxxxxxxxxxxxxx").unwrap().start, 14);
-        //assert_eq!(ted.find(b"xxxxxxxxxxxxxxxabc123xxxxxxxxxxxxxxx").unwrap().start, 15);
+        assert_eq!(ted.find(b"123abcxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx").unwrap().start, 3);
+        assert_eq!(ted.find(b"xxxxxxxxxxxxxxabc123xxxxxxxxxxxxxxxx").unwrap().start, 14);
+        assert_eq!(ted.find(b"xxxxxxxxxxxxxxxabc123xxxxxxxxxxxxxxx").unwrap().start, 15);
         assert_eq!(ted.find(b"xxxxxxxxxxxxxxxxabc123xxxxxxxxxxxxxx").unwrap().start, 16);
-        //assert_eq!(ted.find(b"abcabcxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx").unwrap().start, 0);
-        //assert_eq!(ted.find(b"789xyzxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), None);
+        assert_eq!(ted.find(b"abcabcxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx").unwrap().start, 0);
+        assert_eq!(ted.find(b"789xyzxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), None);
     }
 
+    // TODO: these tests don't really end up testing anything. We need better choices for arbitrary
+    // patterns and haystacks.
+    /*
     quickcheck! {
         fn fast_equal_slow_128(pats: Vec<Vec<u8>>, haystack: Vec<u8>) -> TestResult {
             if let Some(ted) = Teddy::<u8x16>::new(&pats) {
@@ -800,5 +823,6 @@ mod tests {
             TestResult::discard()
         }
     }
+    */
 }
 
