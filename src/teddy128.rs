@@ -327,7 +327,6 @@ References
 [5_u]: https://software.intel.com/sites/landingpage/IntrinsicsGuide
 */
 
-// TODO: Extend this to use AVX2 instructions.
 // TODO: Extend this to use AVX512 instructions.
 // TODO: Extend this to cleverly use Aho-Corasick. Possibly to replace both
 //       "slow" searching and the verification step.
@@ -335,9 +334,6 @@ References
 
 use std::cmp;
 use teddy_simd::{TeddySIMD, TeddySIMDBool};
-
-/// Corresponds to the number of bytes read at a time in the haystack.
-const BLOCK_SIZE: usize = 16;
 
 /// Match reports match information.
 #[derive(Debug, Clone, PartialEq)]
@@ -431,7 +427,7 @@ impl<T: TeddySIMD> Teddy<T> {
         // a naive brute force search.
         //
         // TODO: Use Aho-Corasick.
-        if haystack.is_empty() || haystack.len() < (BLOCK_SIZE + 2) {
+        if haystack.is_empty() || haystack.len() < (T::BLOCK_SIZE + 2) {
             return self.slow(haystack, 0);
         }
         match self.masks.len() {
@@ -450,8 +446,8 @@ impl<T: TeddySIMD> Teddy<T> {
         let mut pos = 0;
         let zero = T::splat(0);
         let len = haystack.len();
-        debug_assert!(len >= BLOCK_SIZE);
-        while pos <= len - BLOCK_SIZE {
+        debug_assert!(len >= T::BLOCK_SIZE);
+        while pos <= len - T::BLOCK_SIZE {
             let h = unsafe { T::load_unchecked(haystack, pos) };
             // N.B. `res0` is our `C` in the module documentation.
             let res0 = self.masks.members1(h);
@@ -461,7 +457,7 @@ impl<T: TeddySIMD> Teddy<T> {
                     return Some(m);
                 }
             }
-            pos += BLOCK_SIZE;
+            pos += T::BLOCK_SIZE;
         }
         self.slow(haystack, pos)
     }
@@ -480,8 +476,8 @@ impl<T: TeddySIMD> Teddy<T> {
         // the second byte, so that they can be `AND`'d together.
         let mut prev0 = T::splat(0xFF);
         let mut pos = 1;
-        debug_assert!(len >= BLOCK_SIZE);
-        while pos <= len - BLOCK_SIZE {
+        debug_assert!(len >= T::BLOCK_SIZE);
+        while pos <= len - T::BLOCK_SIZE {
             let h = unsafe { T::load_unchecked(haystack, pos) };
             let (res0, res1) = self.masks.members2(h);
             let res0prev0 = T::right_shift_1(prev0, res0);
@@ -495,7 +491,7 @@ impl<T: TeddySIMD> Teddy<T> {
                     return Some(m);
                 }
             }
-            pos += BLOCK_SIZE;
+            pos += T::BLOCK_SIZE;
         }
         // The windowing above doesn't check the last byte in the last
         // window, so start the slow search at the last byte of the last
@@ -509,14 +505,14 @@ impl<T: TeddySIMD> Teddy<T> {
     /// N.B. This is a straight-forward extrapolation of `find2`. The only
     /// difference is that we need to keep track of two previous values of `C`,
     /// since we now need to align for three bytes.
-    #[inline(never)]
+    #[inline(always)]
     fn find3(&self, haystack: &[u8]) -> Option<Match> {
         let zero = T::splat(0);
         let len = haystack.len();
         let mut prev0 = T::splat(0xFF);
         let mut prev1 = T::splat(0xFF);
         let mut pos = 2;
-        while pos <= len - BLOCK_SIZE {
+        while pos <= len - T::BLOCK_SIZE {
             let h = unsafe { T::load_unchecked(haystack, pos) };
             let (res0, res1, res2) = self.masks.members3(h);
             let res0prev0 = T::right_shift_2(prev0, res0);
@@ -531,7 +527,7 @@ impl<T: TeddySIMD> Teddy<T> {
                     return Some(m);
                 }
             }
-            pos += BLOCK_SIZE;
+            pos += T::BLOCK_SIZE;
         }
         // The windowing above doesn't check the last two bytes in the last
         // window, so start the slow search at the penultimate byte of the
@@ -554,14 +550,7 @@ impl<T: TeddySIMD> Teddy<T> {
     ) -> Option<Match> {
         // The verification procedure is more amenable to standard 64 bit
         // values, so get those.
-        let (res0, res1) = res.u64s();
-        if let Some(m) = self.verify_64(haystack, pos, res0, 0) {
-            Some(m)
-        } else if let Some(m) = self.verify_64(haystack, pos, res1, 8) {
-            Some(m)
-        } else {
-            None
-        }
+        res.first_u64(|res64, offset| self.verify_64(haystack, pos, res64, offset))
     }
 
     /// Runs the verification procedure on half of `C`.
@@ -680,7 +669,7 @@ impl<T: TeddySIMD> Masks<T> {
     /// Finds the fingerprints that are in the given haystack block. i.e., this
     /// returns `C` as described in the module documentation.
     ///
-    /// More specifically, `for i in 0..16` and `j in 0..8, C[i][j] == 1` if and
+    /// More specifically, `for i in 0..BLOCK_SIZE` and `j in 0..8, C[i][j] == 1` if and
     /// only if `haystack_block[i]` corresponds to a fingerprint that is part
     /// of a pattern in bucket `j`.
     #[inline(always)]
@@ -741,11 +730,14 @@ impl<T: TeddySIMD> Mask<T> {
         let byte_lo = (byte & 0xF) as u32;
         let byte_hi = (byte >> 4) as u32;
 
-        let lo = self.lo.extract(byte_lo);
-        self.lo = self.lo.replace(byte_lo, ((1 << bucket) as u8) | lo);
+        // Our mask is repeated across 16 byte lanes. (TODO: explain why)
+        let lo = self.lo.extract(byte_lo) | ((1 << bucket) as u8);
+        let hi = self.hi.extract(byte_hi) | ((1 << bucket) as u8);
 
-        let hi = self.hi.extract(byte_hi);
-        self.hi = self.hi.replace(byte_hi, ((1 << bucket) as u8) | hi);
+        for lane in 0..(T::BLOCK_SIZE as u32 / 16) {
+            self.lo = self.lo.replace(byte_lo + 16 * lane, lo);
+            self.hi = self.hi.replace(byte_hi + 16 * lane, hi);
+        }
     }
 }
 
@@ -769,13 +761,43 @@ mod tests {
     use teddy128::Teddy;
     use quickcheck::TestResult;
 
+    #[cfg(target_feature="avx2")]
+    use simd::x86::avx::u8x32;
+
+    #[test]
+    fn one_pattern() {
+        let pats = vec![b"abc".to_vec()];
+        let ted = Teddy::<u8x32>::new(&pats).unwrap();
+        //assert_eq!(ted.find(b"123abcxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx").unwrap().start, 3);
+        //assert_eq!(ted.find(b"xxxxxxxxxxxxxxabc123xxxxxxxxxxxxxxxx").unwrap().start, 14);
+        //assert_eq!(ted.find(b"xxxxxxxxxxxxxxxabc123xxxxxxxxxxxxxxx").unwrap().start, 15);
+        assert_eq!(ted.find(b"xxxxxxxxxxxxxxxxabc123xxxxxxxxxxxxxx").unwrap().start, 16);
+        //assert_eq!(ted.find(b"abcabcxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx").unwrap().start, 0);
+        //assert_eq!(ted.find(b"789xyzxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), None);
+    }
+
     quickcheck! {
-        fn prop(pats: Vec<Vec<u8>>, haystack: Vec<u8>) -> TestResult {
+        fn fast_equal_slow_128(pats: Vec<Vec<u8>>, haystack: Vec<u8>) -> TestResult {
             if let Some(ted) = Teddy::<u8x16>::new(&pats) {
-                TestResult::from_bool(ted.find(&haystack) == ted.slow(&haystack, 0))
-            } else {
-                TestResult::discard()
+                if let Some(res) = ted.slow(&haystack, 0) {
+                    return TestResult::from_bool(ted.find(&haystack) == Some(res));
+                }
             }
+            TestResult::discard()
+        }
+    }
+
+
+
+    #[cfg(target_feature="avx2")]
+    quickcheck! {
+        fn fast_equal_slow_256(pats: Vec<Vec<u8>>, haystack: Vec<u8>) -> TestResult {
+            if let Some(ted) = Teddy::<u8x32>::new(&pats) {
+                if let Some(res) = ted.slow(&haystack, 0) {
+                    return TestResult::from_bool(ted.find(&haystack) == Some(res));
+                }
+            }
+            TestResult::discard()
         }
     }
 }
