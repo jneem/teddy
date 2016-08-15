@@ -47,7 +47,8 @@ pub trait TeddySIMD: BitAnd<Output=Self> + Clone + Copy + Shr<u8, Output=Self> +
 
     /// Applies the function `f` to each of the `u64` values in this vector (beginning with the
     /// least significant). Returns the first non-`None` value that `f` returned.
-    fn first_u64<T, F>(self, f: F) -> Option<T> where F: Fn(u64, usize) -> Option<T>;
+    //fn first_u64<T, F>(self, f: F) -> Option<T> where F: Fn(u64, usize) -> Option<T>;
+    fn u64s(self) -> (u64, u64);
 
     /// Creates a new SIMD vector from the elements in `slice` starting at `offset`. `slice` must
     /// have at least the number of elements required to fill a SIMD vector.
@@ -62,17 +63,9 @@ impl TeddySIMD for u8x16 {
     fn splat(x: u8) -> Self { u8x16::splat(x) }
     fn extract(self, idx: u32) -> u8 { u8x16::extract(self, idx) }
     fn replace(self, idx: u32, elem: u8) -> Self { u8x16::replace(self, idx, elem) }
-
-    fn first_u64<T, F>(self, f: F) -> Option<T> where F: Fn(u64, usize) -> Option<T> {
-        let res64: u64x2 = unsafe { transmute(self) };
-
-        if let Some(m) = f(res64.extract(0), 0) {
-            Some(m)
-        } else if let Some(m) = f(res64.extract(1), 8) {
-            Some(m)
-        } else {
-            None
-        }
+    fn u64s(self) -> (u64, u64) {
+        let self64: u64x2 = unsafe { transmute(self) };
+        (self64.extract(0), self64.extract(1))
     }
 
     fn right_shift_1(left: Self, right: Self) -> Self {

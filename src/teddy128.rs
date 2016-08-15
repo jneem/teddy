@@ -509,7 +509,7 @@ impl<T: TeddySIMD> Teddy<T> {
     /// N.B. This is a straight-forward extrapolation of `find2`. The only
     /// difference is that we need to keep track of two previous values of `C`,
     /// since we now need to align for three bytes.
-    #[inline(always)]
+    #[inline(never)]
     fn find3(&self, haystack: &[u8]) -> Option<Match> {
         let zero = T::splat(0);
         let len = haystack.len();
@@ -554,7 +554,14 @@ impl<T: TeddySIMD> Teddy<T> {
     ) -> Option<Match> {
         // The verification procedure is more amenable to standard 64 bit
         // values, so get those.
-        res.first_u64(|res64, offset| self.verify_64(haystack, pos, res64, offset))
+        let (res0, res1) = res.u64s();
+        if let Some(m) = self.verify_64(haystack, pos, res0, 0) {
+            Some(m)
+        } else if let Some(m) = self.verify_64(haystack, pos, res1, 8) {
+            Some(m)
+        } else {
+            None
+        }
     }
 
     /// Runs the verification procedure on half of `C`.
