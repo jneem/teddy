@@ -1,19 +1,21 @@
 #![feature(test)]
 
+extern crate simd;
 extern crate test;
 extern crate teddy;
 
+use simd::u8x16;
 use test::Bencher;
 use teddy::Teddy;
 
 static HAYSTACK: &'static str = include_str!("sherlock.txt");
 
 macro_rules! sherlock {
-    ($name:ident, $pats:expr, $count:expr) => {
+    ($name:ident, $simd_type: ident, $pats:expr, $count:expr) => {
         #[bench]
         fn $name(b: &mut Bencher) {
             let pats: Vec<Vec<u8>> = $pats.into_iter().map(|s| s.as_bytes().to_vec()).collect();
-            let ted = Teddy::new(&pats).unwrap();
+            let ted = Teddy::<$simd_type>::new(&pats).unwrap();
             b.bytes = HAYSTACK.len() as u64;
 
             b.iter(|| {
@@ -29,13 +31,13 @@ macro_rules! sherlock {
     }
 }
 
-sherlock!(names, &["Sherlock", "Holmes"], 558);
+sherlock!(names, u8x16, &["Sherlock", "Holmes"], 558);
 
 // This one doesn't have any matches, but the fingerprints should match a log.
-sherlock!(names_lower, &["sherlock", "holmes"], 0);
+sherlock!(names_lower, u8x16, &["sherlock", "holmes"], 0);
 
-sherlock!(words_long, &["pull", "cabby", "three", "side"], 348);
-sherlock!(words_short, &["pu", "ca", "th", "si"], 15202);
+sherlock!(words_long, u8x16, &["pull", "cabby", "three", "side"], 348);
+sherlock!(words_short, u8x16, &["pu", "ca", "th", "si"], 15202);
 
 // The fingerprints here shouldn't match anything.
-sherlock!(rare, &["xyzxyz"], 0);
+sherlock!(rare, u8x16, &["xyzxyz"], 0);

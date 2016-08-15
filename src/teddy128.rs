@@ -94,7 +94,7 @@ better. Namely:
 1. Teddy's core algorithm scans the haystack in 16 byte chunks. 16 is
    significant because it corresponds to the number of bytes in a SIMD vector.
    If one used AVX2 instructions, then we could scan the haystack in 32 byte
-   chunks. Similarly, if one used AVX512 instructions, we could sca the
+   chunks. Similarly, if one used AVX512 instructions, we could scan the
    haystack in 64 byte chunks. Hyperscan implements SIMD + AVX2, we only
    implement SIMD for the moment. (The author doesn't have a CPU with AVX2
    support... yet.)
@@ -334,12 +334,7 @@ References
 // TODO: Make the inner loop do aligned loads.
 
 use std::cmp;
-use std::mem::transmute;
-use std::ptr;
-
-use simd::u8x16;
-use simd::x86::sse2::u64x2;
-use simd::x86::ssse3::Ssse3U8x16;
+use teddy_simd::{TeddySIMD, TeddySIMDBool};
 
 /// Corresponds to the number of bytes read at a time in the haystack.
 const BLOCK_SIZE: usize = 16;
@@ -358,7 +353,7 @@ pub struct Match {
 
 /// A SIMD accelerated multi substring searcher.
 #[derive(Debug, Clone)]
-pub struct Teddy {
+pub struct Teddy<T: TeddySIMD> {
     /// A list of substrings to match.
     pats: Vec<Vec<u8>>,
     /// A set of 8 buckets. Each bucket corresponds to a single member of a
@@ -367,29 +362,29 @@ pub struct Teddy {
     /// more than 8 members.
     buckets: Vec<Vec<usize>>,
     /// Our set of masks. There's one mask for each byte in the fingerprint.
-    masks: Masks,
+    masks: Masks<T>,
 }
 
 /// A list of masks. This has length equal to the length of the fingerprint.
 /// The length of the fingerprint is always `max(3, len(smallest_substring))`.
 #[derive(Debug, Clone)]
-struct Masks(Vec<Mask>);
+struct Masks<T: TeddySIMD>(Vec<Mask<T>>);
 
 /// A single mask.
 #[derive(Debug, Clone, Copy)]
-struct Mask {
+struct Mask<T: TeddySIMD> {
     /// Bitsets for the low nybbles in a fingerprint.
-    lo: u8x16,
+    lo: T,
     /// Bitsets for the high nybbles in a fingerprint.
-    hi: u8x16,
+    hi: T,
 }
 
-impl Teddy {
+impl<T: TeddySIMD> Teddy<T> {
     /// Create a new `Teddy` multi substring matcher.
     ///
     /// If a `Teddy` matcher could not be created (e.g., `pats` is empty or has
     /// an empty substring), then `None` is returned.
-    pub fn new(pats: &[Vec<u8>]) -> Option<Teddy> {
+    pub fn new(pats: &[Vec<u8>]) -> Option<Teddy<T>> {
         let min_len = pats.iter().map(|p| p.len()).min().unwrap_or(0);
         // Don't allow any empty patterns and require that we have at
         // least one pattern.
@@ -453,11 +448,11 @@ impl Teddy {
     #[inline(always)]
     fn find1(&self, haystack: &[u8]) -> Option<Match> {
         let mut pos = 0;
-        let zero = u8x16::splat(0);
+        let zero = T::splat(0);
         let len = haystack.len();
         debug_assert!(len >= BLOCK_SIZE);
         while pos <= len - BLOCK_SIZE {
-            let h = unsafe { u8x16::load_unchecked(haystack, pos) };
+            let h = unsafe { T::load_unchecked(haystack, pos) };
             // N.B. `res0` is our `C` in the module documentation.
             let res0 = self.masks.members1(h);
             // Only do expensive verification if there are any non-zero bits.
@@ -475,15 +470,7 @@ impl Teddy {
     /// long.
     #[inline(always)]
     fn find2(&self, haystack: &[u8]) -> Option<Match> {
-        // This is an exotic way to right shift a SIMD vector across lanes.
-        // See below at use for more details.
-        let res0shuffle = u8x16::new(
-            0, 0, 1, 2,
-            3, 4, 5, 6,
-            7, 8, 9, 10,
-            11, 12, 13, 14,
-        );
-        let zero = u8x16::splat(0);
+        let zero = T::splat(0);
         let len = haystack.len();
         // The previous value of `C` (from the module documentation) for the
         // *first* byte in the fingerprint. On subsequent iterations, we take
@@ -491,26 +478,13 @@ impl Teddy {
         // position of the current `C`, shifting all other bitsets to the right
         // one lane. This causes `C` for the first byte to line up with `C` for
         // the second byte, so that they can be `AND`'d together.
-        let mut prev0 = u8x16::splat(0xFF);
+        let mut prev0 = T::splat(0xFF);
         let mut pos = 1;
         debug_assert!(len >= BLOCK_SIZE);
         while pos <= len - BLOCK_SIZE {
-            let h = unsafe { u8x16::load_unchecked(haystack, pos) };
+            let h = unsafe { T::load_unchecked(haystack, pos) };
             let (res0, res1) = self.masks.members2(h);
-
-            // The next three lines are essentially equivalent to
-            //
-            // ```rust,ignore
-            // (prev0 << 15) | (res0 >> 1)
-            // ```
-            //
-            // ... if SIMD vectors could shift across lanes. There is the
-            // `PALIGNR` instruction, but apparently LLVM doesn't expose it as
-            // a proper intrinsic. Thankfully, it appears the following
-            // sequence does indeed compile down to a `PALIGNR`.
-            let prev0byte0 = prev0.extract(15);
-            let res0shiftr8 = res0.shuffle_bytes(res0shuffle);
-            let res0prev0 = res0shiftr8.replace(0, prev0byte0);
+            let res0prev0 = T::right_shift_1(prev0, res0);
 
             // `AND`'s our `C` values together.
             let res = res0prev0 & res1;
@@ -537,38 +511,16 @@ impl Teddy {
     /// since we now need to align for three bytes.
     #[inline(always)]
     fn find3(&self, haystack: &[u8]) -> Option<Match> {
-        let zero = u8x16::splat(0);
+        let zero = T::splat(0);
         let len = haystack.len();
-
-        let res0shuffle = u8x16::new(
-            0, 0, 0, 1,
-            2, 3, 4, 5,
-            6, 7, 8, 9,
-            10, 11, 12, 13,
-        );
-        let res1shuffle = u8x16::new(
-            0, 0, 1, 2,
-            3, 4, 5, 6,
-            7, 8, 9, 10,
-            11, 12, 13, 14,
-        );
-        let mut prev0 = u8x16::splat(0xFF);
-        let mut prev1 = u8x16::splat(0xFF);
+        let mut prev0 = T::splat(0xFF);
+        let mut prev1 = T::splat(0xFF);
         let mut pos = 2;
         while pos <= len - BLOCK_SIZE {
-            let h = unsafe { u8x16::load_unchecked(haystack, pos) };
+            let h = unsafe { T::load_unchecked(haystack, pos) };
             let (res0, res1, res2) = self.masks.members3(h);
-
-            let prev0byte0 = prev0.extract(14);
-            let prev0byte1 = prev0.extract(15);
-            let res0shiftr16 = res0.shuffle_bytes(res0shuffle);
-            let res0prev0 = res0shiftr16.replace(0, prev0byte0)
-                                        .replace(1, prev0byte1);
-
-            let prev1byte0 = prev1.extract(15);
-            let res1shiftr8 = res1.shuffle_bytes(res1shuffle);
-            let res1prev1 = res1shiftr8.replace(0, prev1byte0);
-
+            let res0prev0 = T::right_shift_2(prev0, res0);
+            let res1prev1 = T::right_shift_1(prev1, res1);
             let res = res0prev0 & res1prev1 & res2;
 
             prev0 = res0;
@@ -598,20 +550,11 @@ impl Teddy {
         &self,
         haystack: &[u8],
         pos: usize,
-        res: u8x16,
+        res: T,
     ) -> Option<Match> {
         // The verification procedure is more amenable to standard 64 bit
         // values, so get those.
-        let res64: u64x2 = unsafe { transmute(res) };
-        let reshi = res64.extract(0);
-        let reslo = res64.extract(1);
-        if let Some(m) = self.verify_64(haystack, pos, reshi, 0) {
-            return Some(m);
-        }
-        if let Some(m) = self.verify_64(haystack, pos, reslo, 8) {
-            return Some(m);
-        }
-        None
+        res.first_u64(|res64, offset| self.verify_64(haystack, pos, res64, offset))
     }
 
     /// Runs the verification procedure on half of `C`.
@@ -707,10 +650,10 @@ impl Teddy {
     }
 }
 
-impl Masks {
+impl<T: TeddySIMD> Masks<T> {
     /// Create a new set of masks of size `n`, where `n` corresponds to the
     /// number of bytes in a fingerprint.
-    fn new(n: usize) -> Masks {
+    fn new(n: usize) -> Masks<T> {
         Masks(vec![Mask::new(); n])
     }
 
@@ -734,8 +677,8 @@ impl Masks {
     /// only if `haystack_block[i]` corresponds to a fingerprint that is part
     /// of a pattern in bucket `j`.
     #[inline(always)]
-    fn members1(&self, haystack_block: u8x16) -> u8x16 {
-        let masklo = u8x16::splat(0xF);
+    fn members1(&self, haystack_block: T) -> T {
+        let masklo = T::splat(0xF);
         let hlo = haystack_block & masklo;
         let hhi = (haystack_block >> 4) & masklo;
 
@@ -745,8 +688,8 @@ impl Masks {
     /// Like members1, but computes C for the first and second bytes in the
     /// fingerprint.
     #[inline(always)]
-    fn members2(&self, haystack_block: u8x16) -> (u8x16, u8x16) {
-        let masklo = u8x16::splat(0xF);
+    fn members2(&self, haystack_block: T) -> (T, T) {
+        let masklo = T::splat(0xF);
         let hlo = haystack_block & masklo;
         let hhi = (haystack_block >> 4) & masklo;
 
@@ -760,8 +703,8 @@ impl Masks {
     /// Like `members1`, but computes `C` for the first, second and third bytes
     /// in the fingerprint.
     #[inline(always)]
-    fn members3(&self, haystack_block: u8x16) -> (u8x16, u8x16, u8x16) {
-        let masklo = u8x16::splat(0xF);
+    fn members3(&self, haystack_block: T) -> (T, T, T) {
+        let masklo = T::splat(0xF);
         let hlo = haystack_block & masklo;
         let hhi = (haystack_block >> 4) & masklo;
 
@@ -775,12 +718,12 @@ impl Masks {
     }
 }
 
-impl Mask {
+impl<T: TeddySIMD> Mask<T> {
     /// Create a new mask with no members.
-    fn new() -> Mask {
+    fn new() -> Mask<T> {
         Mask {
-            lo: u8x16::splat(0),
-            hi: u8x16::splat(0),
+            lo: T::splat(0),
+            hi: T::splat(0),
         }
     }
 
@@ -796,34 +739,6 @@ impl Mask {
 
         let hi = self.hi.extract(byte_hi);
         self.hi = self.hi.replace(byte_hi, ((1 << bucket) as u8) | hi);
-    }
-}
-
-/// UnsafeLoad permits loading data into a SIMD vector without bounds checks.
-///
-/// Ideally, this would be part of the `simd` crate, or even better, we could
-/// figure out how to do it without `unsafe` at all.
-trait UnsafeLoad {
-    type Elem;
-
-    /// load_unchecked creates a new SIMD vector from the elements in `slice`
-    /// starting at `offset`. `slice` must have at least the number of elements
-    /// required to fill a SIMD vector.
-    unsafe fn load_unchecked(slice: &[Self::Elem], offset: usize) -> Self;
-}
-
-impl UnsafeLoad for u8x16 {
-    type Elem = u8;
-
-    unsafe fn load_unchecked(slice: &[u8], offset: usize) -> u8x16 {
-        // TODO: Can we just do pointer casting here? I don't think so, since
-        // this could be an unaligned load? Help me.
-        let mut x = u8x16::splat(0);
-        ptr::copy_nonoverlapping(
-            slice.get_unchecked(offset),
-            &mut x as *mut u8x16 as *mut u8,
-            16);
-        x
     }
 }
 
@@ -843,12 +758,13 @@ pub fn find_slow(pattern: &[u8], haystack: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use simd::u8x16;
     use teddy128::Teddy;
     use quickcheck::TestResult;
 
     quickcheck! {
         fn prop(pats: Vec<Vec<u8>>, haystack: Vec<u8>) -> TestResult {
-            if let Some(ted) = Teddy::new(&pats) {
+            if let Some(ted) = Teddy::<u8x16>::new(&pats) {
                 TestResult::from_bool(ted.find(&haystack) == ted.slow(&haystack, 0))
             } else {
                 TestResult::discard()
