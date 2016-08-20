@@ -726,6 +726,7 @@ mod tests {
     #[cfg(target_feature="avx2")]
     use simd::x86::avx::u8x32;
 
+    #[cfg(target_feature="avx2")]
     #[test]
     fn one_pattern() {
         let pats = vec![b"abc".to_vec()];
