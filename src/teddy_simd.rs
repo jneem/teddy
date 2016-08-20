@@ -6,8 +6,15 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! The purpose of this module is to allow us to write the core part of Teddy's algorithm in a way
+//! that is generic over the SIMD width. Unfortunately, the `simd` crate is not organized to
+//! facilitate this: the traits it defines are based on which instruction set the required
+//! operations belong to, not on what the operations actually do. This module therefore does a
+//! minimal version of this sort of logical grouping. It may be worth expanding this module into an
+//! alternative to the `simd` crate.
+
 use simd::{bool8ix16, u8x16};
-use simd::x86::sse2::{Sse2Bool8ix16, u64x2};
+use simd::x86::sse2::Sse2Bool8ix16;
 use simd::x86::ssse3::Ssse3U8x16;
 use std::fmt::Debug;
 use std::mem::transmute;
@@ -15,8 +22,9 @@ use std::ops::{BitAnd, Shr};
 use std::ptr;
 
 #[cfg(target_feature="avx2")]
-use simd::x86::avx::{bool8ix32, i8x32, u64x4, u8x32};
+use simd::x86::avx::{bool8ix32, i8x32, u8x32};
 
+// Here are some operations that we need but are not (currently) exposed by `simd`.
 extern "platform-intrinsic" {
     fn simd_shuffle16<T, U>(x: T, y: T, idx: [u32; 16]) -> U;
     #[cfg(target_feature="avx2")]
@@ -53,10 +61,6 @@ pub trait TeddySIMD: BitAnd<Output=Self> + Clone + Copy + Debug + Shr<u8, Output
     /// Same as `right_shift_1`, but shifts by 2 bytes.
     fn right_shift_2(left: Self, right: Self) -> Self;
 
-    /// Applies the function `f` to each of the `u64` values in this vector (beginning with the
-    /// least significant). Returns the first non-`None` value that `f` returned.
-    fn first_u64<T, F>(self, f: F) -> Option<T> where F: Fn(u64, usize) -> Option<T>;
-
     /// Creates a new SIMD vector from the elements in `slice` starting at `offset`. `slice` must
     /// have at least the number of elements required to fill a SIMD vector.
     unsafe fn load_unchecked(slice: &[u8], offset: usize) -> Self;
@@ -74,18 +78,6 @@ impl TeddySIMD for u8x16 {
     fn extract(self, idx: u32) -> u8 { u8x16::extract(self, idx) }
     #[inline]
     fn replace(self, idx: u32, elem: u8) -> Self { u8x16::replace(self, idx, elem) }
-    #[inline]
-    fn first_u64<T, F>(self, f: F) -> Option<T> where F: Fn(u64, usize) -> Option<T> {
-        let res64: u64x2 = unsafe { transmute(self) };
-
-        if let Some(m) = f(res64.extract(0), 0) {
-            Some(m)
-        } else if let Some(m) = f(res64.extract(1), 8) {
-            Some(m)
-        } else {
-            None
-        }
-    }
 
     #[inline]
     fn right_shift_1(left: Self, right: Self) -> Self {
@@ -136,22 +128,6 @@ impl TeddySIMD for u8x32 {
     fn extract(self, idx: u32) -> u8 { u8x32::extract(self, idx) }
     #[inline]
     fn replace(self, idx: u32, elem: u8) -> Self { u8x32::replace(self, idx, elem) }
-    #[inline]
-    fn first_u64<T, F>(self, f: F) -> Option<T> where F: Fn(u64, usize) -> Option<T> {
-        let res64: u64x4 = unsafe { transmute(self) };
-
-        if let Some(m) = f(res64.extract(0), 0) {
-            Some(m)
-        } else if let Some(m) = f(res64.extract(1), 8) {
-            Some(m)
-        } else if let Some(m) = f(res64.extract(2), 16) {
-            Some(m)
-        } else if let Some(m) = f(res64.extract(3), 24) {
-            Some(m)
-        } else {
-            None
-        }
-    }
 
     #[inline]
     fn right_shift_1(left: Self, right: Self) -> Self {

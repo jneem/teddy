@@ -8,6 +8,6 @@ extern crate simd;
 extern crate quickcheck;
 
 mod teddy_simd;
-mod teddy128;
+mod core;
 
-pub use teddy128::Teddy;
+pub use core::Teddy;

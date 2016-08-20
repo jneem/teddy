@@ -720,7 +720,7 @@ impl<T: TeddySIMD> Mask<T> {
 
 #[cfg(test)]
 mod tests {
-    use teddy128::Teddy;
+    use core::Teddy;
     //use quickcheck::TestResult;
 
     #[cfg(target_feature="avx2")]
