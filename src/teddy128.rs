@@ -458,8 +458,9 @@ impl<T: TeddySIMD> Teddy<T> {
             // N.B. `res0` is our `C` in the module documentation.
             let res0 = self.masks.members1(h);
             // Only do expensive verification if there are any non-zero bits.
-            if res0.ne(zero).any() {
-                if let Some(m) = self.verify_128(haystack, pos, res0) {
+            let bitfield = res0.ne(zero).move_mask();
+            if bitfield != 0 {
+                if let Some(m) = self.verify(haystack, pos, res0, bitfield) {
                     return Some(m);
                 }
             }
@@ -491,9 +492,11 @@ impl<T: TeddySIMD> Teddy<T> {
             // `AND`'s our `C` values together.
             let res = res0prev0 & res1;
             prev0 = res0;
-            if res.ne(zero).any() {
+
+            let bitfield = res.ne(zero).move_mask();
+            if bitfield != 0 {
                 let pos = pos.checked_sub(1).unwrap();
-                if let Some(m) = self.verify_128(haystack, pos, res) {
+                if let Some(m) = self.verify(haystack, pos, res, bitfield) {
                     return Some(m);
                 }
             }
@@ -531,7 +534,7 @@ impl<T: TeddySIMD> Teddy<T> {
             let bitfield = res.ne(zero).move_mask();
             if bitfield != 0 {
                 let pos = pos.checked_sub(2).unwrap();
-                if let Some(m) = self.verify_new(haystack, pos, res, bitfield) {
+                if let Some(m) = self.verify(haystack, pos, res, bitfield) {
                     return Some(m);
                 }
             }
@@ -545,7 +548,13 @@ impl<T: TeddySIMD> Teddy<T> {
         self.slow(haystack, pos.checked_sub(2).unwrap())
     }
 
-    fn verify_new(&self, haystack: &[u8], pos: usize, res: T, mut bitfield: u32) -> Option<Match> {
+    /// Runs the verification procedure on `res` (i.e., `C` from the module
+    /// documentation), where the haystack block starts at `pos` in
+    /// `haystack`.
+    ///
+    /// If a match exists, it returns the first one.
+    #[inline(always)]
+    fn verify(&self, haystack: &[u8], pos: usize, res: T, mut bitfield: u32) -> Option<Match> {
         while bitfield != 0 {
             // The next offset, relative to pos, where some fingerprint matched.
             let byte_pos = bitfield.trailing_zeros();
@@ -568,59 +577,6 @@ impl<T: TeddySIMD> Teddy<T> {
             }
         }
 
-        None
-    }
-
-    /// Runs the verification procedure on `res` (i.e., `C` from the module
-    /// documentation), where the haystack block starts at `pos` in
-    /// `haystack`.
-    ///
-    /// If a match exists, it returns the first one.
-    #[inline(never)]
-    fn verify_128(
-        &self,
-        haystack: &[u8],
-        pos: usize,
-        res: T,
-    ) -> Option<Match> {
-        // The verification procedure is more amenable to standard 64 bit
-        // values, so get those.
-        res.first_u64(|res64, offset| self.verify_64(haystack, pos, res64, offset))
-    }
-
-    /// Runs the verification procedure on half of `C`.
-    ///
-    /// If a match exists, it returns the first one.
-    ///
-    /// `offset` is an additional byte offset to add to the position before
-    /// substring match verification.
-    #[inline(always)]
-    fn verify_64(
-        &self,
-        haystack: &[u8],
-        pos: usize,
-        mut res: u64,
-        offset: usize,
-    ) -> Option<Match> {
-        // There's a possible match so long as there's at least one bit set.
-        while res != 0 {
-            // The next possible match is at the least significant bit.
-            let bit = res.trailing_zeros();
-            // The position of the bit in its corresponding lane gives us the
-            // corresponding bucket.
-            let bucket = (bit % 8) as usize;
-            // The lane that the bit is in gives us its offset.
-            let bytei = (bit / 8) as usize;
-            // Compute the start of where a substring would start.
-            let start = pos + offset + bytei;
-            // Kill off this bit. If we couldn't match anything, we'll go to
-            // the next bit.
-            res &= !(1 << bit);
-            // Actual substring search verification.
-            if let Some(m) = self.verify_bucket(haystack, bucket, start) {
-                return Some(m);
-            }
-        }
         None
     }
 
@@ -760,20 +716,6 @@ impl<T: TeddySIMD> Mask<T> {
             self.hi = self.hi.replace(byte_hi + 16 * lane, hi);
         }
     }
-}
-
-/// Slow single-substring search use for naive brute force matching.
-#[cold]
-pub fn find_slow(pattern: &[u8], haystack: &[u8]) -> Option<usize> {
-    if pattern.len() > haystack.len() {
-        return None;
-    }
-    for i in 0..(haystack.len() - pattern.len() + 1) {
-        if pattern == &haystack[i..i + pattern.len()] {
-            return Some(i);
-        }
-    }
-    None
 }
 
 #[cfg(test)]
