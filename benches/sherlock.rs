@@ -51,6 +51,14 @@ sherlock!(words_short_128, u8x16, &["pu", "ca", "th", "si"], 15202);
 #[cfg(target_feature="avx2")]
 sherlock!(words_short_256, u8x32, &["pu", "ca", "th", "si"], 15202);
 
+sherlock!(chars_128, u8x16, &["S", "H"], 2115);
+#[cfg(target_feature="avx2")]
+sherlock!(chars_256, u8x32, &["S", "H"], 2115);
+
+sherlock!(chars_rare_128, u8x16, &["Z", "X"], 12);
+#[cfg(target_feature="avx2")]
+sherlock!(chars_rare_256, u8x32, &["Z", "X"], 12);
+
 // The fingerprints here shouldn't match anything.
 sherlock!(rare_128, u8x16, &["xyzxyz"], 0);
 #[cfg(target_feature="avx2")]

@@ -429,123 +429,138 @@ impl<T: TeddySIMD> Teddy<T> {
     /// Searches `haystack` for the substrings in this `Teddy`. If a match was
     /// found, then it is returned. Otherwise, `None` is returned.
     pub fn find(&self, haystack: &[u8]) -> Option<Match> {
-        // If our haystack is smaller than the block size, then fall back to
-        // a naive brute force search.
-        //
-        // TODO: Use Aho-Corasick.
+        // If our haystack is smaller than the block size, then fall back to Aho-Corasick.
+        // TODO: probably we should insist that the haystack be a reasonable multiple of the block
+        // size, because there probably isn't much point in doing SIMD if we don't get to go
+        // through the loop several times.
         if haystack.is_empty() || haystack.len() < (T::BLOCK_SIZE + 2) {
             return self.slow(haystack, 0);
         }
-        match self.masks.len() {
-            0 => None,
-            1 => self.find1(haystack),
-            2 => self.find2(haystack),
-            3 => self.find3(haystack),
-            _ => unreachable!(),
-        }
-    }
 
-    /// `find1` is used when there is only 1 mask. This is the easy case and is
-    /// pretty much as described in the module documentation.
-    #[inline(always)]
-    fn find1(&self, haystack: &[u8]) -> Option<Match> {
-        let mut pos = 0;
+        // With a multi-byte fingerprint, we need to include results from previous iterations. To
+        // avoid special casing at the beginning of the input, it's easiest to start a byte or two
+        // after the beginning.
+        let mut pos = self.masks.len() - 1;
         let zero = T::splat(0);
         let len = haystack.len();
-        debug_assert!(len >= T::BLOCK_SIZE);
-        while pos <= len - T::BLOCK_SIZE {
-            let h = unsafe { T::load_unchecked(haystack, pos) };
-            // N.B. `res0` is our `C` in the module documentation.
-            let res0 = self.masks.members1(h);
-            // Only do expensive verification if there are any non-zero bits.
-            let bitfield = res0.ne(zero).move_mask();
-            if bitfield != 0 {
-                if let Some(m) = self.verify(haystack, pos, res0, bitfield) {
-                    return Some(m);
-                }
-            }
-            pos += T::BLOCK_SIZE;
-        }
-        self.slow(haystack, pos)
-    }
 
-    /// `find2` is used when there are 2 masks, e.g., the fingerprint is 2 bytes
-    /// long.
-    #[inline(always)]
-    fn find2(&self, haystack: &[u8]) -> Option<Match> {
-        let zero = T::splat(0);
-        let len = haystack.len();
-        // The previous value of `C` (from the module documentation) for the
-        // *first* byte in the fingerprint. On subsequent iterations, we take
-        // the last bitset from the previous `C` and insert it into the first
-        // position of the current `C`, shifting all other bitsets to the right
-        // one lane. This causes `C` for the first byte to line up with `C` for
-        // the second byte, so that they can be `AND`'d together.
-        let mut prev0 = T::splat(0xFF);
-        let mut pos = 1;
-        debug_assert!(len >= T::BLOCK_SIZE);
-        while pos <= len - T::BLOCK_SIZE {
-            let h = unsafe { T::load_unchecked(haystack, pos) };
-            let (res0, res1) = self.masks.members2(h);
-            let res0prev0 = T::right_shift_1(prev0, res0);
-
-            // `AND`'s our `C` values together.
-            let res = res0prev0 & res1;
-            prev0 = res0;
-
-            let bitfield = res.ne(zero).move_mask();
-            if bitfield != 0 {
-                let pos = pos.checked_sub(1).unwrap();
-                if let Some(m) = self.verify(haystack, pos, res, bitfield) {
-                    return Some(m);
-                }
-            }
-            pos += T::BLOCK_SIZE;
-        }
-        // The windowing above doesn't check the last byte in the last
-        // window, so start the slow search at the last byte of the last
-        // window.
-        self.slow(haystack, pos.checked_sub(1).unwrap())
-    }
-
-    /// `find3` is used when there are 3 masks, e.g., the fingerprint is 3 bytes
-    /// long.
-    ///
-    /// N.B. This is a straight-forward extrapolation of `find2`. The only
-    /// difference is that we need to keep track of two previous values of `C`,
-    /// since we now need to align for three bytes.
-    #[inline(always)]
-    fn find3(&self, haystack: &[u8]) -> Option<Match> {
-        let zero = T::splat(0);
-        let len = haystack.len();
+        // With a multi-byte fingerprint, we need somewhere to store previous reults.
         let mut prev0 = T::splat(0xFF);
         let mut prev1 = T::splat(0xFF);
-        let mut pos = 2;
-        while pos <= len - T::BLOCK_SIZE {
-            let h = unsafe { T::load_unchecked(haystack, pos) };
-            let (res0, res1, res2) = self.masks.members3(h);
-            let res0prev0 = T::right_shift_2(prev0, res0);
-            let res1prev1 = T::right_shift_1(prev1, res1);
-            let res = res0prev0 & res1prev1 & res2;
 
-            prev0 = res0;
-            prev1 = res1;
-
-            let bitfield = res.ne(zero).move_mask();
-            if bitfield != 0 {
-                let pos = pos.checked_sub(2).unwrap();
-                if let Some(m) = self.verify(haystack, pos, res, bitfield) {
-                    return Some(m);
+        // This is the inner loop for the case when there is only 1 mask. This is the easy case and
+        // is pretty much as described in the module documentation.
+        //
+        // `$load` is an expression for loading the next bunch of bytes from the haystack.
+        macro_rules! find1_step {
+            ($load:expr) => {
+                {
+                    let h = unsafe { $load };
+                    // N.B. `res0` is our `C` in the module documentation.
+                    let res0 = self.masks.members1(h);
+                    // Only do expensive verification if there are any non-zero bits.
+                    let bitfield = res0.ne(zero).move_mask();
+                    if bitfield != 0 {
+                        if let Some(m) = self.verify(haystack, pos, res0, bitfield) {
+                            return Some(m);
+                        }
+                    }
                 }
-            }
-
-            pos += T::BLOCK_SIZE;
+            };
         }
-        // The windowing above doesn't check the last two bytes in the last
-        // window, so start the slow search at the penultimate byte of the
-        // last window.
-        // self.slow(haystack, pos.saturating_sub(2))
-        self.slow(haystack, pos.checked_sub(2).unwrap())
+
+        // This is the inner loop for the case when the fingerprint is 2 bytes long.
+        macro_rules! find2_step {
+            ($load:expr) => {
+                {
+                    let h = unsafe { $load };
+                    let (res0, res1) = self.masks.members2(h);
+
+                    // `prev0` is the previous value of `C` (from the module documentation) for the
+                    // *first* byte in the fingerprint. On subsequent iterations, we take
+                    // the last bitset from the previous `C` and insert it into the first
+                    // position of the current `C`, shifting all other bitsets to the right
+                    // one lane. This causes `C` for the first byte to line up with `C` for
+                    // the second byte, so that they can be `AND`'d together.
+                    let res0prev0 = T::right_shift_1(prev0, res0);
+
+                    // `AND`'s our `C` values together.
+                    let res = res0prev0 & res1;
+                    prev0 = res0;
+
+                    let bitfield = res.ne(zero).move_mask();
+                    if bitfield != 0 {
+                        let pos = pos.checked_sub(1).unwrap();
+                        if let Some(m) = self.verify(haystack, pos, res, bitfield) {
+                            return Some(m);
+                        }
+                    }
+                }
+            };
+        }
+
+        // This is the inner loop for the case when the fingerprint is 3 bytes long.
+        //
+        // This is a straight-forward extrapolation of the two-byte case. The only
+        // difference is that we need to keep track of two previous values of `C`,
+        // since we now need to align for three bytes.
+        macro_rules! find3_step {
+            ($load:expr) => {
+                {
+                    let h = unsafe { $load };
+                    let (res0, res1, res2) = self.masks.members3(h);
+                    let res0prev0 = T::right_shift_2(prev0, res0);
+                    let res1prev1 = T::right_shift_1(prev1, res1);
+                    let res = res0prev0 & res1prev1 & res2;
+
+                    prev0 = res0;
+                    prev1 = res1;
+
+                    let bitfield = res.ne(zero).move_mask();
+                    if bitfield != 0 {
+                        let pos = pos.checked_sub(2).unwrap();
+                        if let Some(m) = self.verify(haystack, pos, res, bitfield) {
+                            return Some(m);
+                        }
+                    }
+                }
+            };
+        }
+
+        // This macro implements the main loop, taking the operations
+        macro_rules! find_loop {
+            ($step:ident) => {
+                {
+                    // Do the first, unaligned, iteration.
+                    $step!(T::load_unchecked(haystack, pos));
+
+                    // Increment pos by up to BLOCK_SIZE, but only as far as the next alignment boundary.
+                    let pos_align = (haystack.as_ptr() as usize + pos) % T::BLOCK_SIZE;
+                    pos = pos + T::BLOCK_SIZE - pos_align;
+
+                    // The main loop (in which the loads are all aligned).
+                    while pos <= len - T::BLOCK_SIZE {
+                        //$step!(*(haystack.get_unchecked(pos) as *const u8 as *const T));
+                        $step!(T::load_unchecked(haystack, pos));
+                        pos += T::BLOCK_SIZE;
+                    }
+                }
+            };
+        }
+
+        match self.masks.len() {
+            0 => { return None; },
+            1 => { find_loop!(find1_step) },
+            2 => { find_loop!(find2_step) },
+            3 => { find_loop!(find3_step) },
+            _ => unreachable!(),
+        }
+
+        // Do a slow search through the last part of the haystack, which was not big enough to do
+        // SIMD on.  Because of the windowing involved in looking for a multi-byte fingerprint, the
+        // code above doesn't check the last `self.masks.len() - 1` bytes in the last window, so
+        // start the slow search that many bytes earlier to compensate.
+        self.slow(haystack, pos - (self.masks.len() - 1))
     }
 
     /// Runs the verification procedure on `res` (i.e., `C` from the module

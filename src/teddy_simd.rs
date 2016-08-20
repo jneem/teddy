@@ -96,8 +96,8 @@ impl TeddySIMD for u8x16 {
 
     #[inline]
     unsafe fn load_unchecked(slice: &[u8], offset: usize) -> u8x16 {
-        // TODO: Can we just do pointer casting here? I don't think so, since
-        // this could be an unaligned load? Help me.
+        // I'm not sure if this is the best way to write an unaligned load, but it does seem to
+        // compile down to a single `movdqu` instruction.
         let mut x = u8x16::splat(0);
         ptr::copy_nonoverlapping(
             slice.get_unchecked(offset),
@@ -146,8 +146,6 @@ impl TeddySIMD for u8x32 {
 
     #[inline]
     unsafe fn load_unchecked(slice: &[u8], offset: usize) -> u8x32 {
-        // TODO: Can we just do pointer casting here? I don't think so, since
-        // this could be an unaligned load? Help me.
         let mut x = u8x32::splat(0);
         ptr::copy_nonoverlapping(
             slice.get_unchecked(offset),
