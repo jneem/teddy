@@ -327,11 +327,6 @@ References
 [5_u]: https://software.intel.com/sites/landingpage/IntrinsicsGuide
 */
 
-// TODO: Extend this to use AVX512 instructions.
-// TODO: Extend this to cleverly use Aho-Corasick. Possibly to replace both
-//       "slow" searching and the verification step.
-// TODO: Make the inner loop do aligned loads.
-
 use std::cmp;
 use aho_corasick::{Automaton, AcAutomaton, FullAcAutomaton};
 use teddy_simd::{TeddySIMD, TeddySIMDBool};
