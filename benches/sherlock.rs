@@ -11,7 +11,7 @@ use teddy::Teddy;
 #[cfg(target_feature="avx2")]
 use simd::x86::avx::u8x32;
 
-static HAYSTACK: &'static str = include_str!("sherlock.txt");
+static HAYSTACK: &'static str = include_str!("data/sherlock.txt");
 
 macro_rules! sherlock {
     ($name:ident, $simd_type: ident, $pats:expr, $count:expr) => {
