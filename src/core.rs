@@ -28,6 +28,86 @@ pub struct Teddy<T: TeddySIMD> {
     ac: FullAcAutomaton<Vec<u8>>,
 }
 
+// This is the content of the inner loop for the case when there is only 1 mask. This is the easy
+// case and is pretty much as described in the module documentation.
+//
+// The main reason that we separate this out as a macro is to reuse the same code for both aligned
+// and unaligned loads. (Also, it helps us to manually unroll a loop.)
+//
+// `$slf` is an instance of `Teddy<T>`.
+// `$load` is an expression for loading the next bunch of bytes from the haystack.
+// `$prev0` and `$prev1` are unused here, but see find2_step.
+// `$res` is where we should store the result of the fingerprinting (i.e. `C` in the crate
+// documentation).
+macro_rules! find1_step {
+    ($slf:expr, $load:expr, $prev0:expr, $prev1:expr, $res:expr) => {
+        {
+            let h = unsafe { $load };
+            $res = $slf.masks.members1(h);
+        }
+    };
+}
+
+// This is the inner loop for the case when the fingerprint is 2 bytes long.
+//
+// `$prev0` is the previous value of `C` (from the crate documentation) for the
+// *first* byte in the fingerprint. On subsequent iterations, we take
+// the last bitset from the previous `C` and insert it into the first
+// position of the current `C`, shifting all other bitsets to the right
+// one lane. This causes `C` for the first byte to line up with `C` for
+// the second byte, so that they can be `AND`'d together.
+//
+// `$prev1` is similar, except that it is used in addition to `prev1` in the
+// case of a 3-byte fingerprint. In this case, `prev1` is the previous value
+// of `C` for the second byte in the fingerprint.
+macro_rules! find2_step {
+    ($slf:expr, $load:expr, $prev0:expr, $prev1:expr, $res:expr) => {
+        {
+            let h = unsafe { $load };
+            let (res0, res1) = $slf.masks.members2(h);
+
+            $res = res1;
+            // If the second byte of the fingerprint didn't match anything, there's no need to do
+            // all the shifting and ANDing to combine the fingerprints. Avoiding this shifting is
+            // potentially worthwhile if we're using AVX instructions, because shifting across
+            // lanes in AVX requires several instructions.
+            if T::BLOCK_SIZE == 16 || res1.ne(T::splat(0)).any() {
+                let res0prev0 = T::right_shift_1($prev0, res0);
+                $res = $res & res0prev0;
+            }
+
+            $prev0 = res0;
+        }
+    };
+}
+
+// This is the inner loop for the case when the fingerprint is 3 bytes long.
+//
+// This is a straight-forward extrapolation of the two-byte case. The only
+// difference is that we need to keep track of two previous values of `C`,
+// since we now need to align for three bytes.
+macro_rules! find3_step {
+    ($slf:expr, $load:expr, $prev0:expr, $prev1:expr, $res:expr) => {
+        {
+            let h = unsafe { $load };
+            let (res0, res1, res2) = $slf.masks.members3(h);
+
+            $res = res2;
+            // Again, this is to avoid wasting time if we already know from the final fingerprint
+            // byte that there is no match. Since we need to shift twice here, this seems to even
+            // be a gain in the plain old SSE case.
+            if res2.ne(T::splat(0)).any() {
+                let res0prev0 = T::right_shift_2($prev0, res0);
+                let res1prev1 = T::right_shift_1($prev1, res1);
+                $res = $res & res0prev0 & res1prev1;
+            }
+
+            $prev0 = res0;
+            $prev1 = res1;
+        }
+    };
+}
+
 impl<T: TeddySIMD> Teddy<T> {
     /// Create a new `Teddy` multi substring matcher.
     ///
@@ -84,99 +164,25 @@ impl<T: TeddySIMD> Teddy<T> {
         let zero = T::splat(0);
         let len = haystack.len();
 
-        // With a multi-byte fingerprint, we need somewhere to store previous reults.
-        //
-        // `prev0` is the previous value of `C` (from the module documentation) for the
-        // *first* byte in the fingerprint. On subsequent iterations, we take
-        // the last bitset from the previous `C` and insert it into the first
-        // position of the current `C`, shifting all other bitsets to the right
-        // one lane. This causes `C` for the first byte to line up with `C` for
-        // the second byte, so that they can be `AND`'d together.
-        //
-        // `prev1` is similar, except that it is used in addition to `prev1` in the
-        // case of a 3-byte fingerprint. In this case, `prev1` is the previous value
-        // of `C` for the second byte in the fingerprint.
         let mut prev0 = T::splat(0xFF);
         let mut prev1 = T::splat(0xFF);
 
-        // This is the inner loop for the case when there is only 1 mask. This is the easy case and
-        // is pretty much as described in the module documentation.
-        //
-        // `$load` is an expression for loading the next bunch of bytes from the haystack.
-        macro_rules! find1_step {
-            ($load:expr) => {
-                {
-                    let h = unsafe { $load };
-                    // N.B. `res0` is our `C` in the module documentation.
-                    let res0 = self.masks.members1(h);
-                    // Only do expensive verification if there are any non-zero bits.
-                    let bitfield = res0.ne(zero).move_mask();
-                    if bitfield != 0 {
-                        if let Some(m) = self.verify(haystack, pos, res0, bitfield) {
-                            return Some(m);
-                        }
-                    }
-                }
-            };
-        }
-
-        // This is the inner loop for the case when the fingerprint is 2 bytes long.
-        macro_rules! find2_step {
-            ($load:expr) => {
-                {
-                    let h = unsafe { $load };
-                    let (res0, res1) = self.masks.members2(h);
-
-                    let res0prev0 = T::right_shift_1(prev0, res0);
-
-                    // `AND`'s our `C` values together.
-                    let res = res0prev0 & res1;
-                    prev0 = res0;
-
-                    let bitfield = res.ne(zero).move_mask();
-                    if bitfield != 0 {
-                        let pos = pos.checked_sub(1).unwrap();
-                        if let Some(m) = self.verify(haystack, pos, res, bitfield) {
-                            return Some(m);
-                        }
-                    }
-                }
-            };
-        }
-
-        // This is the inner loop for the case when the fingerprint is 3 bytes long.
-        //
-        // This is a straight-forward extrapolation of the two-byte case. The only
-        // difference is that we need to keep track of two previous values of `C`,
-        // since we now need to align for three bytes.
-        macro_rules! find3_step {
-            ($load:expr) => {
-                {
-                    let h = unsafe { $load };
-                    let (res0, res1, res2) = self.masks.members3(h);
-                    let res0prev0 = T::right_shift_2(prev0, res0);
-                    let res1prev1 = T::right_shift_1(prev1, res1);
-                    let res = res0prev0 & res1prev1 & res2;
-
-                    prev0 = res0;
-                    prev1 = res1;
-
-                    let bitfield = res.ne(zero).move_mask();
-                    if bitfield != 0 {
-                        let pos = pos.checked_sub(2).unwrap();
-                        if let Some(m) = self.verify(haystack, pos, res, bitfield) {
-                            return Some(m);
-                        }
-                    }
-                }
-            };
-        }
+        let mut res = zero;
 
         macro_rules! find_loop {
             ($step:ident) => {
                 {
                     // Do the first, unaligned, iteration.
-                    $step!(T::load_unchecked(haystack, pos));
+                    $step!(self, T::load_unchecked(haystack, pos), prev0, prev1, res);
+
+                    // Only do expensive verification if there are any non-zero bits.
+                    let bitfield = res.ne(zero).move_mask();
+                    if bitfield != 0 {
+                        let pos = pos - (self.masks.len() - 1);
+                        if let Some(m) = self.verify(haystack, pos, res, bitfield) {
+                            return Some(m);
+                        }
+                    }
 
                     // Increment pos by up to BLOCK_SIZE, but only as far as the next alignment boundary.
                     let pos_align = (haystack.as_ptr() as usize + pos) % T::BLOCK_SIZE;
@@ -188,22 +194,58 @@ impl<T: TeddySIMD> Teddy<T> {
                     // SSE prefers). It would be possible to do the shift (at least for the u8x16
                     // version) using PSHUFB, but it seems easier to just conservatively set prev0
                     // and prev1 to all 1's. This allows some false positives in the fingerprint
-                    // matching step.
+                    // matching step, but we're not in the inner loop yet, so that's ok.
                     prev0 = T::splat(0xFF);
                     prev1 = T::splat(0xFF);
 
-                    // The main loop (in which the loads are all aligned).
-                    while pos <= len - T::BLOCK_SIZE {
-                        $step!(*(haystack.get_unchecked(pos) as *const u8 as *const T));
-                        //$step!(T::load_unchecked(haystack, pos));
-                        pos += T::BLOCK_SIZE;
+                    // The main loop (in which the loads are all aligned). The control flow here is
+                    // a bit funky. Logically, this is the same as
+                    //    while ... {
+                    //        step!(...);
+                    //        if we should verify {
+                    //            verify();
+                    //        }
+                    //    }
+                    // However, this weird double-loop version is faster when verifying is rare
+                    // (and if it isn't rare then you should be using Teddy anyway). Also,
+                    // unrolling the inner loop gives a nice little boost.
+                    //
+                    // Duplicating the conditionals is a little unfortunate, but the only way I
+                    // found to avoid it was using labelled loops. That works, but spits out a huge
+                    // number of (un-shut-up-able) warnings because labels aren't hygienic in
+                    // macros.
+                    while pos <= len - 2 * T::BLOCK_SIZE {
+                        let mut bitfield = 0;
+
+                        while pos <= len - 2 * T::BLOCK_SIZE {
+                            $step!(self, *(haystack.get_unchecked(pos) as *const u8 as *const T), prev0, prev1, res);
+                            bitfield = res.ne(zero).move_mask();
+                            if bitfield != 0 {
+                                break;
+                            }
+                            pos += T::BLOCK_SIZE;
+
+                            $step!(self, *(haystack.get_unchecked(pos) as *const u8 as *const T), prev0, prev1, res);
+                            bitfield = res.ne(zero).move_mask();
+                            if bitfield != 0 {
+                                break;
+                            }
+                            pos += T::BLOCK_SIZE;
+                        }
+
+                        if bitfield != 0 {
+                            let start_pos = pos - (self.masks.len() - 1);
+                            if let Some(m) = self.verify(haystack, start_pos, res, bitfield) {
+                                return Some(m);
+                            }
+                            pos += T::BLOCK_SIZE;
+                        }
                     }
                 }
             };
         }
 
         match self.masks.len() {
-            0 => { return None; },
             1 => { find_loop!(find1_step) },
             2 => { find_loop!(find2_step) },
             3 => { find_loop!(find3_step) },
@@ -291,6 +333,65 @@ impl<T: TeddySIMD> Teddy<T> {
         })
     }
 }
+
+/*
+#[cfg(target_feature="avx2")]
+impl Finder for Teddy<u8x32> {
+    fn do_find(&self, haystack: &[u8]) -> Option<Match> {
+        if haystack.is_empty() || haystack.len() < (u8x32::BLOCK_SIZE + 2) {
+            return self.slow(haystack, 0);
+        }
+
+        let mut pos = self.masks.len() - 1;
+        let zero = u8x32::splat(0);
+        let len = haystack.len();
+        type T = u8x32;
+
+        let mut prev0 = u8x32::splat(0xFF);
+        let mut prev1 = u8x32::splat(0xFF);
+
+        match self.masks.len() {
+            0 => { return None; },
+            1 => { return None; },
+            2 => {
+                find2_step!(self, u8x32::load_unchecked(haystack, pos), haystack, pos, prev0, prev1, zero);
+
+                let pos_align = (haystack.as_ptr() as usize + pos) % u8x32::BLOCK_SIZE;
+                pos = pos + u8x32::BLOCK_SIZE - pos_align;
+
+                prev0 = u8x32::splat(0xFF);
+                prev1 = u8x32::splat(0xFF);
+
+                while pos <= len - u8x32::BLOCK_SIZE {
+                    find2_step!(self, *(haystack.get_unchecked(pos) as *const u8 as *const T), haystack, pos, prev0, prev1, zero);
+                    /*
+                    let h = unsafe { *(haystack.get_unchecked(pos) as *const u8 as *const u8x32) };
+                    let (part0, part1) = self.masks.members2(h);
+
+                    let prev0part0 = u8x32::right_shift_1(prev0, part0);
+                    let res = prev0part0 & part1;
+                    prev0 = part0;
+
+                    let bitfield = res.ne(zero).move_mask();
+                    if bitfield != 0 {
+                        let pos = pos.checked_sub(1).unwrap();
+                        if let Some(m) = self.verify(haystack, pos, res, bitfield) {
+                            return Some(m);
+                        }
+                    }
+                    */
+
+                    pos += u8x32::BLOCK_SIZE;
+                }
+            },
+            3 => { return None; },
+            _ => unreachable!(),
+        }
+
+        self.slow(haystack, pos - (self.masks.len() - 1))
+    }
+}
+*/
 
 #[cfg(test)]
 mod tests {
