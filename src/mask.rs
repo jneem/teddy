@@ -1,5 +1,5 @@
 use std::cmp;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::usize;
 use teddy_simd::TeddySIMD;
 
@@ -230,7 +230,7 @@ fn merge_one_bucket(buckets: &mut Vec<Bucket>) {
 /// to 8 buckets in such a way that the fingerprints for the buckets are as small as possible.
 fn gather_buckets(pats: &[Vec<u8>], fing_len: usize) -> Vec<Vec<usize>> {
     // Start by putting all the patterns with the exact same fingerprint into a single bucket.
-    let mut buckets = HashMap::with_capacity(pats.len());
+    let mut buckets = BTreeMap::new();
     for (pati, pat) in pats.iter().enumerate() {
         buckets.entry(&pat[0..fing_len])
             .or_insert_with(|| Bucket::new(fing_len))

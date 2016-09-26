@@ -28,8 +28,6 @@ use simd::x86::avx::{bool8ix32, i8x32, u8x32};
 extern "platform-intrinsic" {
     fn simd_shuffle16<T, U>(x: T, y: T, idx: [u32; 16]) -> U;
     #[cfg(target_feature="avx2")]
-    fn simd_shuffle32<T, U>(x: T, y: T, idx: [u32; 32]) -> U;
-    #[cfg(target_feature="avx2")]
     fn x86_mm256_shuffle_epi8(x: i8x32, y: i8x32) -> i8x32;
     #[cfg(target_feature="avx2")]
     fn x86_mm256_movemask_epi8(x: i8x32) -> i32;
@@ -131,12 +129,54 @@ impl TeddySIMD for u8x32 {
 
     #[inline]
     fn right_shift_1(left: Self, right: Self) -> Self {
-        unsafe { simd_shuffle32(left, right, [31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62]) }
+        // It would be nicer just to use an intrinsic for this shuffle, but LLVM generates four
+        // instructions for the shuffle we need, whereas the optimal sequence only takes two.
+        unsafe {
+            let ret: Self;
+            // 33 = 0x21, so the `vperm2i128` instruction concatenates the least significant 16
+            // bytes of `right` with the most significant 16 bytes of `left`. That is,
+            //
+            // left:  31L .. 16L | 15L .. 0L
+            // right: 31R .. 16R | 15R .. 0R
+            //
+            // gives
+            //
+            // ret: 15R .. 0R | 31L .. 16L
+            //
+            // Then we shift both lanes of `ret` to the right by 15, while shifting in `right`.
+            // This gives
+            //
+            // ret: 30R ... 16R 15R | 14R .. 0R 31L
+            //
+            // Overall, we managed to shift `right` one byte to the left, while shifting in `left`
+            // from the right. But then why is this method called `right_shift_1`?! It's because
+            // the pictures above are with the most significant bytes on the left, but in most of
+            // this crate (for example, in the crate documentation describing the Teddy algorithm)
+            // we think of text as running from left to right. Since x86 is little endian, the left
+            // shift above is a right shift from the text perspective.
+            asm!("vperm2i128 $$33, $2, $1, $0; vpalignr $$15, $0, $2, $0"
+                 // The output of the code above. That is, `$0` above refers to the variable `ret`.
+                 // The '=' means that we write to it, and the '&' means that we also use it as a
+                 // temporary value. The 'x' means it's a SIMD register.
+                 : "=&x"(ret)
+                 // The inputs (which we do not write to). That is, `$1` above means `left`, while
+                 // `$2` means `right`.
+                 : "x"(left), "x"(right)
+            );
+            ret
+        }
     }
 
     #[inline]
     fn right_shift_2(left: Self, right: Self) -> Self {
-        unsafe { simd_shuffle32(left, right, [30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61]) }
+        unsafe {
+            let ret: Self;
+            asm!("vperm2i128 $$33, $2, $1, $0; vpalignr $$14, $0, $2, $0"
+                 : "=&x"(ret)
+                 : "x"(left), "x"(right)
+            );
+            ret
+        }
     }
 
     #[inline]
@@ -169,6 +209,8 @@ impl TeddySIMDBool for bool8ix32 {
 #[cfg(test)]
 mod tests {
     use simd::u8x16;
+    #[cfg(target_feature="avx2")]
+    use simd::x86::avx::u8x32;
     use teddy_simd::TeddySIMD;
 
     #[test]
@@ -181,6 +223,20 @@ mod tests {
 
         let result = TeddySIMD::right_shift_2(left, right);
         let expected = unsafe { TeddySIMD::load_unchecked(b"EF0123456789abcd", 0) };
+        assert!(result.eq(expected).all());
+    }
+
+    #[cfg(target_feature="avx2")]
+    #[test]
+    fn right_shifts_256() {
+        let left: u8x32 = unsafe { TeddySIMD::load_unchecked(b"0123456789ABCDEFqwertyuiopasdfgh", 0) };
+        let right: u8x32 = unsafe { TeddySIMD::load_unchecked(b"0123456789abcdefQWERTYUIOPASDFGH", 0) };
+        let result = TeddySIMD::right_shift_1(left, right);
+        let expected = unsafe { TeddySIMD::load_unchecked(b"h0123456789abcdefQWERTYUIOPASDFG", 0) };
+        assert!(result.eq(expected).all());
+
+        let result = TeddySIMD::right_shift_2(left, right);
+        let expected = unsafe { TeddySIMD::load_unchecked(b"gh0123456789abcdefQWERTYUIOPASDF", 0) };
         assert!(result.eq(expected).all());
     }
 }

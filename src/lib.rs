@@ -319,7 +319,7 @@ References
 [5_u]: https://software.intel.com/sites/landingpage/IntrinsicsGuide
 */
 
-#![feature(associated_consts, cfg_target_feature, platform_intrinsics)]
+#![feature(asm, associated_consts, cfg_target_feature, platform_intrinsics)]
 
 extern crate aho_corasick;
 extern crate simd;

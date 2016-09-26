@@ -37,13 +37,11 @@ pub struct Teddy<T: TeddySIMD> {
 // `$slf` is an instance of `Teddy<T>`.
 // `$load` is an expression for loading the next bunch of bytes from the haystack.
 // `$prev0` and `$prev1` are unused here, but see find2_step.
-// `$res` is where we should store the result of the fingerprinting (i.e. `C` in the crate
-// documentation).
 macro_rules! find1_step {
-    ($slf:expr, $load:expr, $prev0:expr, $prev1:expr, $res:expr) => {
+    ($slf:expr, $load:expr, $prev0:expr, $prev1:expr) => {
         {
             let h = unsafe { $load };
-            $res = $slf.masks.members1(h);
+            $slf.masks.members1(h)
         }
     };
 }
@@ -61,22 +59,13 @@ macro_rules! find1_step {
 // case of a 3-byte fingerprint. In this case, `prev1` is the previous value
 // of `C` for the second byte in the fingerprint.
 macro_rules! find2_step {
-    ($slf:expr, $load:expr, $prev0:expr, $prev1:expr, $res:expr) => {
+    ($slf:expr, $load:expr, $prev0:expr, $prev1:expr) => {
         {
             let h = unsafe { $load };
             let (res0, res1) = $slf.masks.members2(h);
-
-            $res = res1;
-            // If the second byte of the fingerprint didn't match anything, there's no need to do
-            // all the shifting and ANDing to combine the fingerprints. Avoiding this shifting is
-            // potentially worthwhile if we're using AVX instructions, because shifting across
-            // lanes in AVX requires several instructions.
-            if T::BLOCK_SIZE == 16 || res1.ne(T::splat(0)).any() {
-                let res0prev0 = T::right_shift_1($prev0, res0);
-                $res = $res & res0prev0;
-            }
-
+            let res0prev0 = T::right_shift_1($prev0, res0);
             $prev0 = res0;
+            res1 & res0prev0
         }
     };
 }
@@ -87,23 +76,16 @@ macro_rules! find2_step {
 // difference is that we need to keep track of two previous values of `C`,
 // since we now need to align for three bytes.
 macro_rules! find3_step {
-    ($slf:expr, $load:expr, $prev0:expr, $prev1:expr, $res:expr) => {
+    ($slf:expr, $load:expr, $prev0:expr, $prev1:expr) => {
         {
             let h = unsafe { $load };
             let (res0, res1, res2) = $slf.masks.members3(h);
-
-            $res = res2;
-            // Again, this is to avoid wasting time if we already know from the final fingerprint
-            // byte that there is no match. Since we need to shift twice here, this seems to even
-            // be a gain in the plain old SSE case.
-            if res2.ne(T::splat(0)).any() {
-                let res0prev0 = T::right_shift_2($prev0, res0);
-                let res1prev1 = T::right_shift_1($prev1, res1);
-                $res = $res & res0prev0 & res1prev1;
-            }
-
+            let res0prev0 = T::right_shift_2($prev0, res0);
+            let res1prev1 = T::right_shift_1($prev1, res1);
             $prev0 = res0;
             $prev1 = res1;
+
+            res2 & res1prev1 & res0prev0
         }
     };
 }
@@ -167,13 +149,11 @@ impl<T: TeddySIMD> Teddy<T> {
         let mut prev0 = T::splat(0xFF);
         let mut prev1 = T::splat(0xFF);
 
-        let mut res = zero;
-
         macro_rules! find_loop {
             ($step:ident) => {
                 {
                     // Do the first, unaligned, iteration.
-                    $step!(self, T::load_unchecked(haystack, pos), prev0, prev1, res);
+                    let mut res = $step!(self, T::load_unchecked(haystack, pos), prev0, prev1);
 
                     // Only do expensive verification if there are any non-zero bits.
                     let bitfield = res.ne(zero).move_mask();
@@ -191,10 +171,9 @@ impl<T: TeddySIMD> Teddy<T> {
                     // Since we shifted by an amount not necessarily equal to BLOCK_SIZE, prev0 and
                     // prev1 are not correct. We could fix it by shifting them, but that isn't
                     // terribly easy since the shift is not known at compile-time (which is what
-                    // SSE prefers). It would be possible to do the shift (at least for the u8x16
-                    // version) using PSHUFB, but it seems easier to just conservatively set prev0
-                    // and prev1 to all 1's. This allows some false positives in the fingerprint
-                    // matching step, but we're not in the inner loop yet, so that's ok.
+                    // SSE prefers). It seems easier to just conservatively set prev0 and prev1 to
+                    // all 1's. This allows some false positives in the fingerprint matching step,
+                    // but we're not in the inner loop yet, so that's ok.
                     prev0 = T::splat(0xFF);
                     prev1 = T::splat(0xFF);
 
@@ -217,15 +196,18 @@ impl<T: TeddySIMD> Teddy<T> {
                     while pos <= len - 2 * T::BLOCK_SIZE {
                         let mut bitfield = 0;
 
+                        // TODO: it may be worthwhile writing this inner loop in assembly. Among
+                        // other things, the code generated by LLVM spills a lot of YMM registers
+                        // that probably don't need to be spilled.
                         while pos <= len - 2 * T::BLOCK_SIZE {
-                            $step!(self, *(haystack.get_unchecked(pos) as *const u8 as *const T), prev0, prev1, res);
+                            res = $step!(self, *(haystack.get_unchecked(pos) as *const u8 as *const T), prev0, prev1);
                             bitfield = res.ne(zero).move_mask();
                             if bitfield != 0 {
                                 break;
                             }
                             pos += T::BLOCK_SIZE;
 
-                            $step!(self, *(haystack.get_unchecked(pos) as *const u8 as *const T), prev0, prev1, res);
+                            res = $step!(self, *(haystack.get_unchecked(pos) as *const u8 as *const T), prev0, prev1);
                             bitfield = res.ne(zero).move_mask();
                             if bitfield != 0 {
                                 break;
