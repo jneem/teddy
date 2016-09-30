@@ -131,11 +131,9 @@ impl<T: TeddySIMD> Teddy<T> {
     // squelch those warnings.
     #[allow(unused_assignments)]
     pub fn find(&self, haystack: &[u8]) -> Option<Match> {
-        // If our haystack is smaller than the block size, then fall back to Aho-Corasick.
-        // TODO: probably we should insist that the haystack be a reasonable multiple of the block
-        // size, because there probably isn't much point in doing SIMD if we don't get to go
-        // through the loop several times.
-        if haystack.is_empty() || haystack.len() < (T::BLOCK_SIZE + 2) {
+        // If our haystack is too small, fall back to Aho-Corasick.
+        // TODO: the threshold here should be informed by benchmarks.
+        if haystack.is_empty() || haystack.len() < 4 * T::BLOCK_SIZE {
             return self.slow(haystack, 0);
         }
 
@@ -193,6 +191,9 @@ impl<T: TeddySIMD> Teddy<T> {
                     // found to avoid it was using labelled loops. That works, but spits out a huge
                     // number of (un-shut-up-able) warnings because labels aren't hygienic in
                     // macros.
+                    //
+                    // The subtraction in the following line will not underflow, since if `len` is
+                    // too small then we have already fallen back to Aho-Corasick.
                     while pos <= len - 2 * T::BLOCK_SIZE {
                         let mut bitfield = 0;
 
