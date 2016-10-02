@@ -245,6 +245,10 @@ impl<T: TeddySIMD> Teddy<T> {
     /// `haystack`.
     ///
     /// If a match exists, it returns the first one.
+    // TODO: it may be worth optimizing a special case: if the fingerprints have no false positives
+    // and the patterns are all the same length as the fingerprints then we don't have to verify
+    // anything at all. This sounds like a very special case, but it seems to actually happen (for
+    // example, when the patterns are a smallish number of short, case-insensitive strings).
     #[inline(always)]
     fn verify(&self, haystack: &[u8], pos: usize, res: T, mut bitfield: u32) -> Option<Match> {
         while bitfield != 0 {

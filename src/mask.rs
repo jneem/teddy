@@ -398,5 +398,7 @@ mod tests {
     merge_number!(merge_equal_fings_2b, ["abc", "abdef", "abcde"], 2, 1);
     merge_number!(merge_equal_fings_3a, ["abc", "abdef", "abcde"], 3, 2);
     merge_number!(merge_equal_fings_3b, ["abc", "abczyx", "abcde"], 3, 1);
+
+    // TODO: add some proper tests for merging.
 }
 
