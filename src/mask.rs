@@ -1,5 +1,6 @@
 use std::cmp;
 use std::collections::BTreeMap;
+use std::fmt::{Debug, Error as FmtError, Formatter};
 use std::usize;
 use teddy_simd::TeddySIMD;
 
@@ -18,7 +19,7 @@ struct Mask<T: TeddySIMD> {
 }
 
 /// A bitset representing a set of nybbles.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct NybbleSet(u16);
 
 impl NybbleSet {
@@ -38,6 +39,12 @@ impl NybbleSet {
     }
 }
 
+impl Debug for NybbleSet {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), FmtError> {
+        write!(f, "{:016b}", self.0)
+    }
+}
+
 /// A set of bytes.
 ///
 /// This is not just any set of bytes however; it must be a product set: a set of the form `{b:
@@ -45,7 +52,7 @@ impl NybbleSet {
 /// the high and low nybbles of `b`. The reason for considering byte sets of this form is that
 /// these are exactly the sorts of bytesets that can be efficiently searched for using the `PSHUFB`
 /// instruction.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct ByteSet {
     hi: NybbleSet,
     lo: NybbleSet,
@@ -89,6 +96,12 @@ impl ByteSet {
             hi: self.hi.intersection(other.hi),
             lo: self.lo.intersection(other.lo),
         }
+    }
+}
+
+impl Debug for ByteSet {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), FmtError> {
+        write!(f, "{:?}/{:?}", self.hi, self.lo)
     }
 }
 
@@ -215,7 +228,7 @@ fn merge_one_bucket(buckets: &mut Vec<Bucket>) {
             let penalty = b1.merge_penalty(b2);
             if penalty <= best_penalty {
                 best_penalty = penalty;
-                best_pair = (i, j);
+                best_pair = (i, i + 1 + j);
             }
         }
     }
@@ -266,7 +279,7 @@ impl<T: TeddySIMD> Masks<T> {
         let mut masks = Masks(vec![Mask::new(); nmasks]);
         for (bucki, bucket) in buckets.iter().enumerate() {
             for &pati in bucket {
-                // The case is ok because bucki is at most 7.
+                // The cast is ok because bucki is at most 7.
                 masks.add(bucki as u8, &pats[pati]);
             }
         }

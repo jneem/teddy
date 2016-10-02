@@ -11,4 +11,7 @@ simd = "0.1.0"
 
 [dev-dependencies]
 quickcheck = "0.3.1"
+regex-syntax = "0.3"
 
+[profile.bench]
+debug = true
