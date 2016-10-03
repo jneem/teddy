@@ -378,7 +378,8 @@ impl<T: TeddySIMD> Mask<T> {
 
 #[cfg(test)]
 mod tests {
-    use mask::gather_buckets;
+    use super::gather_buckets;
+    use std::collections::BTreeSet;
 
     macro_rules! merge_number {
         ($name:ident, $strs:expr, $fing_len:expr, $expected:expr) => {
@@ -391,6 +392,24 @@ mod tests {
         }
     }
 
+    macro_rules! merge {
+        ($name:ident, $strs:expr, $fing_len:expr, $merged:expr) => {
+            #[test]
+            fn $name() {
+                let pats: Vec<Vec<u8>> = $strs.iter().map(|s| s.as_bytes().to_vec()).collect();
+                let buckets = gather_buckets(&pats, $fing_len);
+                let merged: BTreeSet<BTreeSet<usize>> =
+                    $merged.into_iter().map(|set| set.iter().cloned().collect()).collect();
+                for b in &buckets {
+                    if b.len() > 1 {
+                        println!("bucket {:?}", b);
+                        assert!(merged.contains(&b.iter().cloned().collect()));
+                    }
+                }
+            }
+        }
+    }
+
     // Test the bit where we merge together strings with identical prefixes into the same bucket.
     merge_number!(merge_equal_fings_1a, ["abc", "ae", "az"], 1, 1);
     merge_number!(merge_equal_fings_1b, ["ba", "abc", "ae", "az", "ba", "bc"], 1, 2);
@@ -399,6 +418,29 @@ mod tests {
     merge_number!(merge_equal_fings_3a, ["abc", "abdef", "abcde"], 3, 2);
     merge_number!(merge_equal_fings_3b, ["abc", "abczyx", "abcde"], 3, 1);
 
-    // TODO: add some proper tests for merging.
+    merge!(merge_lossless_a, ["she", "She", "abc", "def", "ghi", "jkl", "mno", "pqr", "stu"], 3, [&[0, 1]]);
+    merge!(merge_lossless_b, ["she", "the", "abc", "def", "ghi", "jkl", "mno", "pqr", "stu"], 3, [&[0, 1]]);
+
+    // We prefer to merge 4 fingerprints into one rather than add any false positives.
+    merge!(merge_lossless_c,
+           ["she", "She", "sHe", "SHe", "abc", "def", "ghi", "jkl", "mno", "pqr", "stu"],
+           3,
+           [&[0, 1, 2, 3]]);
+
+    // Given several choices, we will prefer the one that keeps the max bucket size small.  (The
+    // fact that we merge [0, 2] and [1, 3] instead of [0, 1] and [2, 3] is not particularly
+    // intentional.)
+    merge!(merge_lossless_d,
+           ["she", "She", "sHe", "SHe", "bla", "Bla", "ghi", "jkl", "mno", "pqr", "stu"],
+           3,
+           [&[0, 2], &[1, 3], &[4, 5]]);
+
+    // Merging "she" and "tho" introduces "the" and "sho" as false positives, but that's better
+    // than the alternatives.
+    merge!(merge_lossy_a, ["she", "tho", "abc", "def", "ghi", "jkl", "mno", "pqr", "stu"], 3, [&[0, 1]]);
+    merge!(merge_lossy_b, ["she", "SHe", "abc", "def", "ghi", "jkl", "mno", "pqr", "stu"], 3, [&[0, 1]]);
+    // Merging "she" and "The" introduces "the" and "She" as false positives.
+    merge!(merge_lossy_c, ["she", "The", "abc", "def", "ghi", "jkl", "mno", "pqr", "stu"], 3, [&[0, 1]]);
+    merge!(merge_lossy_d, ["she", "THe", "abc", "ABc", "ghi", "jkl", "mno", "pqr", "stu"], 3, [&[2, 3]]);
 }
 
