@@ -23,8 +23,7 @@ pub struct Teddy<T: TeddySIMD> {
     buckets: Vec<Vec<usize>>,
     /// Our set of masks. There's one mask for each byte in the fingerprint.
     masks: Masks<T>,
-    /// An Aho-Corasick automaton, which we use for quickly testing for a match
-    /// after we've found a fingerprint.
+    /// An Aho-Corasick automaton, which we use as a fall-back.
     ac: FullAcAutomaton<Vec<u8>>,
 }
 
@@ -48,16 +47,15 @@ macro_rules! find1_step {
 
 // This is the inner loop for the case when the fingerprint is 2 bytes long.
 //
-// `$prev0` is the previous value of `C` (from the crate documentation) for the
-// *first* byte in the fingerprint. On subsequent iterations, we take
-// the last bitset from the previous `C` and insert it into the first
-// position of the current `C`, shifting all other bitsets to the right
-// one lane. This causes `C` for the first byte to line up with `C` for
-// the second byte, so that they can be `AND`'d together.
+// `$prev0` is the previous value of `C` (from the crate documentation) for the *first* byte in the
+// fingerprint. On subsequent iterations, we take the last bitset from the previous `C` and insert
+// it into the first position of the current `C`, shifting all other bitsets one byte to the right.
+// This causes `C` for the first byte to line up with `C` for the second byte, so that they can be
+// `AND`'d together.
 //
-// `$prev1` is similar, except that it is used in addition to `prev1` in the
-// case of a 3-byte fingerprint. In this case, `prev1` is the previous value
-// of `C` for the second byte in the fingerprint.
+// `$prev1` is similar, except that it is used in addition to `prev1` in the case of a 3-byte
+// fingerprint. In this case, `prev1` is the previous value of `C` for the second byte in the
+// fingerprint.
 macro_rules! find2_step {
     ($slf:expr, $load:expr, $prev0:expr, $prev1:expr) => {
         {
@@ -132,7 +130,6 @@ impl<T: TeddySIMD> Teddy<T> {
     #[allow(unused_assignments)]
     pub fn find(&self, haystack: &[u8]) -> Option<Match> {
         // If our haystack is too small, fall back to Aho-Corasick.
-        // TODO: the threshold here should be informed by benchmarks.
         if haystack.is_empty() || haystack.len() < 2 * T::BLOCK_SIZE {
             return self.slow(haystack, 0);
         }
