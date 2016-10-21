@@ -168,16 +168,26 @@ impl<T: TeddySIMD> Teddy<T> {
                     prev1 = T::splat(0xFF);
 
                     // The main loop (in which the loads are all aligned). The control flow here is
-                    // a bit funky. Logically, this is the same as
+                    // a bit funky. Logically, we want:
                     //    while ... {
                     //        step!(...);
                     //        if we should verify {
                     //            verify();
                     //        }
                     //    }
-                    // However, this weird double-loop version is faster when verifying is rare
-                    // (and if it isn't rare then you should be using Teddy anyway). Also,
-                    // unrolling the inner loop gives a nice little boost.
+                    // Instead, we write:
+                    //    while ... {
+                    //        while ... {
+                    //            step!(...);
+                    //            if we should verify {
+                    //                break;
+                    //            }
+                    //        }
+                    //        verify();
+                    //    }
+                    // This weird double-loop version is faster when verifying is rare (and if it
+                    // isn't rare then you should be using Teddy anyway). Also, we can unroll the
+                    // inner loop for another little boost.
                     //
                     // Duplicating the conditionals is a little unfortunate, but the only way I
                     // found to avoid it was using labelled loops. That works, but spits out a huge
