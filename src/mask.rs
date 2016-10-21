@@ -207,7 +207,7 @@ impl Bucket {
 
     /// Adds all strings in `other` to this bucket.
     fn merge(&mut self, other: Bucket) {
-        self.pats.extend(&other.pats);
+        self.pats.extend_from_slice(&other.pats);
         self.fing.include(&other.fing);
     }
 }

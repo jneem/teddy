@@ -112,11 +112,6 @@ impl<T: TeddySIMD> Teddy<T> {
         &self.pats
     }
 
-    /// Returns the number of substrings in this matcher.
-    pub fn len(&self) -> usize {
-        self.pats.len()
-    }
-
     /// Returns the approximate size on the heap used by this matcher.
     pub fn approximate_size(&self) -> usize {
         self.pats.iter().fold(0, |a, b| a + b.len())
