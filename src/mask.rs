@@ -300,6 +300,17 @@ impl<T: TeddySIMD> Masks<T> {
         }
     }
 
+    // Turns a block of input into two: the first contains only the high nybbles and the second
+    // contains only the low ones.
+    #[inline(always)]
+    fn nybble_input(&self, haystack_block: T) -> (T, T) {
+        let masklo = T::splat(0xF);
+        let hlo = haystack_block & masklo;
+        let hhi = (haystack_block >> 4) & masklo;
+
+        (hhi, hlo)
+    }
+
     /// Finds the fingerprints that are in the given haystack block. i.e., this
     /// returns `C` as described in the module documentation.
     ///
@@ -308,10 +319,7 @@ impl<T: TeddySIMD> Masks<T> {
     /// of a pattern in bucket `j`.
     #[inline(always)]
     pub fn members1(&self, haystack_block: T) -> T {
-        let masklo = T::splat(0xF);
-        let hlo = haystack_block & masklo;
-        let hhi = (haystack_block >> 4) & masklo;
-
+        let (hhi, hlo) = self.nybble_input(haystack_block);
         self.0[0].lo.shuffle_bytes(hlo) & self.0[0].hi.shuffle_bytes(hhi)
     }
 
@@ -319,9 +327,7 @@ impl<T: TeddySIMD> Masks<T> {
     /// fingerprint.
     #[inline(always)]
     pub fn members2(&self, haystack_block: T) -> (T, T) {
-        let masklo = T::splat(0xF);
-        let hlo = haystack_block & masklo;
-        let hhi = (haystack_block >> 4) & masklo;
+        let (hhi, hlo) = self.nybble_input(haystack_block);
 
         let res0 = self.0[0].lo.shuffle_bytes(hlo)
                    & self.0[0].hi.shuffle_bytes(hhi);
@@ -334,9 +340,7 @@ impl<T: TeddySIMD> Masks<T> {
     /// in the fingerprint.
     #[inline(always)]
     pub fn members3(&self, haystack_block: T) -> (T, T, T) {
-        let masklo = T::splat(0xF);
-        let hlo = haystack_block & masklo;
-        let hhi = (haystack_block >> 4) & masklo;
+        let (hhi, hlo) = self.nybble_input(haystack_block);
 
         let res0 = self.0[0].lo.shuffle_bytes(hlo)
                    & self.0[0].hi.shuffle_bytes(hhi);
