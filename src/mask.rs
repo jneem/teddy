@@ -7,15 +7,15 @@ use teddy_simd::TeddySIMD;
 /// A list of masks. This has length equal to the length of the fingerprint.
 /// The length of the fingerprint is always `max(3, len(smallest_substring))`.
 #[derive(Debug, Clone)]
-pub struct Masks<T: TeddySIMD>(Vec<Mask<T>>);
+pub struct Masks<T: TeddySIMD>(pub Vec<Mask<T>>);
 
 /// A single mask.
 #[derive(Debug, Clone, Copy)]
-struct Mask<T: TeddySIMD> {
+pub struct Mask<T: TeddySIMD> {
     /// Bitsets for the low nybbles in a fingerprint.
-    lo: T,
+    pub lo: T,
     /// Bitsets for the high nybbles in a fingerprint.
-    hi: T,
+    pub hi: T,
 }
 
 /// A bitset representing a set of nybbles.
@@ -298,57 +298,6 @@ impl<T: TeddySIMD> Masks<T> {
         for (i, mask) in self.0.iter_mut().enumerate() {
             mask.add(bucket, pat[i]);
         }
-    }
-
-    // Turns a block of input into two: the first contains only the high nybbles and the second
-    // contains only the low ones.
-    #[inline(always)]
-    fn nybble_input(&self, haystack_block: T) -> (T, T) {
-        let masklo = T::splat(0xF);
-        let hlo = haystack_block & masklo;
-        let hhi = (haystack_block >> 4) & masklo;
-
-        (hhi, hlo)
-    }
-
-    /// Finds the fingerprints that are in the given haystack block. i.e., this
-    /// returns `C` as described in the module documentation.
-    ///
-    /// More specifically, `for i in 0..BLOCK_SIZE` and `j in 0..8, C[i][j] == 1` if and
-    /// only if `haystack_block[i]` corresponds to a fingerprint that is part
-    /// of a pattern in bucket `j`.
-    #[inline(always)]
-    pub fn members1(&self, haystack_block: T) -> T {
-        let (hhi, hlo) = self.nybble_input(haystack_block);
-        self.0[0].lo.shuffle_bytes(hlo) & self.0[0].hi.shuffle_bytes(hhi)
-    }
-
-    /// Like members1, but computes C for the first and second bytes in the
-    /// fingerprint.
-    #[inline(always)]
-    pub fn members2(&self, haystack_block: T) -> (T, T) {
-        let (hhi, hlo) = self.nybble_input(haystack_block);
-
-        let res0 = self.0[0].lo.shuffle_bytes(hlo)
-                   & self.0[0].hi.shuffle_bytes(hhi);
-        let res1 = self.0[1].lo.shuffle_bytes(hlo)
-                   & self.0[1].hi.shuffle_bytes(hhi);
-        (res0, res1)
-    }
-
-    /// Like `members1`, but computes `C` for the first, second and third bytes
-    /// in the fingerprint.
-    #[inline(always)]
-    pub fn members3(&self, haystack_block: T) -> (T, T, T) {
-        let (hhi, hlo) = self.nybble_input(haystack_block);
-
-        let res0 = self.0[0].lo.shuffle_bytes(hlo)
-                   & self.0[0].hi.shuffle_bytes(hhi);
-        let res1 = self.0[1].lo.shuffle_bytes(hlo)
-                   & self.0[1].hi.shuffle_bytes(hhi);
-        let res2 = self.0[2].lo.shuffle_bytes(hlo)
-                   & self.0[2].hi.shuffle_bytes(hhi);
-        (res0, res1, res2)
     }
 }
 

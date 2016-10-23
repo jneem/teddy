@@ -14,7 +14,7 @@
 //! alternative to the `simd` crate.
 
 use simd::{bool8ix16, u8x16};
-use simd::x86::sse2::Sse2Bool8ix16;
+use simd::x86::sse2::{u64x2, Sse2Bool8ix16};
 use simd::x86::ssse3::Ssse3U8x16;
 use std::fmt::Debug;
 use std::mem::transmute;
@@ -22,15 +22,21 @@ use std::ops::{BitAnd, Shr};
 use std::ptr;
 
 #[cfg(target_feature="avx2")]
-use simd::x86::avx::{bool8ix32, i8x32, u8x32};
+use simd::x86::avx::{bool8ix32, i8x32, u8x32, u64x4};
 
 // Here are some operations that we need but are not (currently) exposed by `simd`.
+// TODO: we're currently using x86_mm_testz_si128 unconditionally because it gives decent speedups
+// (up to 20%). However, this is part of SSE 4.1. Since we only really require SSSE3, we might want
+// to add a fallback.
 extern "platform-intrinsic" {
     fn simd_shuffle16<T, U>(x: T, y: T, idx: [u32; 16]) -> U;
+    fn x86_mm_testz_si128(x: u64x2, y: u64x2) -> i32;
     #[cfg(target_feature="avx2")]
     fn x86_mm256_shuffle_epi8(x: i8x32, y: i8x32) -> i8x32;
     #[cfg(target_feature="avx2")]
     fn x86_mm256_movemask_epi8(x: i8x32) -> i32;
+    #[cfg(target_feature="avx2")]
+    fn x86_mm256_testz_si256(x: u64x4, y: u64x4) -> i32;
 }
 
 pub trait TeddySIMDBool: Clone + Copy + Sized {
@@ -50,6 +56,9 @@ pub trait TeddySIMD: BitAnd<Output=Self> + Clone + Copy + Debug + Shr<u8, Output
     fn extract(self, idx: u32) -> u8;
     fn replace(self, idx: u32, elem: u8) -> Self;
     fn shuffle_bytes(self, indices: Self) -> Self;
+
+    /// Returns true if `self & other` is zero.
+    fn test_zero(self, other: Self) -> bool;
 
     /// Puts `left` on the left, `right` on the right, then shifts the whole thing by one byte to
     /// the right and returns the right half (so that the right-most byte of `left` will become the
@@ -76,6 +85,10 @@ impl TeddySIMD for u8x16 {
     fn extract(self, idx: u32) -> u8 { u8x16::extract(self, idx) }
     #[inline]
     fn replace(self, idx: u32, elem: u8) -> Self { u8x16::replace(self, idx, elem) }
+    #[inline]
+    fn test_zero(self, other: Self) -> bool {
+        unsafe { x86_mm_testz_si128(transmute(self), transmute(other)) != 0 }
+    }
 
     #[inline]
     fn right_shift_1(left: Self, right: Self) -> Self {
@@ -126,6 +139,10 @@ impl TeddySIMD for u8x32 {
     fn extract(self, idx: u32) -> u8 { u8x32::extract(self, idx) }
     #[inline]
     fn replace(self, idx: u32, elem: u8) -> Self { u8x32::replace(self, idx, elem) }
+    #[inline]
+    fn test_zero(self, other: Self) -> bool {
+        unsafe { x86_mm256_testz_si256(transmute(self), transmute(other)) != 0 }
+    }
 
     #[inline]
     fn right_shift_1(left: Self, right: Self) -> Self {
