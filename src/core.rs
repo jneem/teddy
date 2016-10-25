@@ -431,85 +431,56 @@ impl<T: TeddySIMD> Teddy<T> {
     }
 }
 
-/*
-#[cfg(target_feature="avx2")]
-impl Finder for Teddy<u8x32> {
-    fn do_find(&self, haystack: &[u8]) -> Option<Match> {
-        if haystack.is_empty() || haystack.len() < (u8x32::BLOCK_SIZE + 2) {
-            return self.slow(haystack, 0);
-        }
-
-        let mut pos = self.masks.len() - 1;
-        let zero = u8x32::splat(0);
-        let len = haystack.len();
-        type T = u8x32;
-
-        let mut prev0 = u8x32::splat(0xFF);
-        let mut prev1 = u8x32::splat(0xFF);
-
-        match self.masks.len() {
-            0 => { return None; },
-            1 => { return None; },
-            2 => {
-                find2_step!(self, u8x32::load_unchecked(haystack, pos), haystack, pos, prev0, prev1, zero);
-
-                let pos_align = (haystack.as_ptr() as usize + pos) % u8x32::BLOCK_SIZE;
-                pos = pos + u8x32::BLOCK_SIZE - pos_align;
-
-                prev0 = u8x32::splat(0xFF);
-                prev1 = u8x32::splat(0xFF);
-
-                while pos <= len - u8x32::BLOCK_SIZE {
-                    find2_step!(self, *(haystack.get_unchecked(pos) as *const u8 as *const T), haystack, pos, prev0, prev1, zero);
-                    /*
-                    let h = unsafe { *(haystack.get_unchecked(pos) as *const u8 as *const u8x32) };
-                    let (part0, part1) = self.masks.members2(h);
-
-                    let prev0part0 = u8x32::right_shift_1(prev0, part0);
-                    let res = prev0part0 & part1;
-                    prev0 = part0;
-
-                    let bitfield = res.ne(zero).move_mask();
-                    if bitfield != 0 {
-                        let pos = pos.checked_sub(1).unwrap();
-                        if let Some(m) = self.verify(haystack, pos, res, bitfield) {
-                            return Some(m);
-                        }
-                    }
-                    */
-
-                    pos += u8x32::BLOCK_SIZE;
-                }
-            },
-            3 => { return None; },
-            _ => unreachable!(),
-        }
-
-        self.slow(haystack, pos - (self.masks.len() - 1))
-    }
-}
-*/
-
 #[cfg(test)]
 mod tests {
     use core::Teddy;
+    use teddy_simd::TeddySIMD;
     use simd::u8x16;
+    use std::iter::repeat;
     //use quickcheck::TestResult;
 
-    #[test]
-    fn one_pattern() {
-        let pats = vec![b"abc".to_vec()];
-        let ted = Teddy::<u8x16>::new(&pats).unwrap();
-        assert_eq!(ted.find(b"123abcxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx").unwrap().start, 3);
-        assert_eq!(ted.find(b"xxxxxxxxxxxxxxabc123xxxxxxxxxxxxxxxx").unwrap().start, 14);
-        assert_eq!(ted.find(b"xxxxxxxxxxxxxxxabc123xxxxxxxxxxxxxxx").unwrap().start, 15);
-        assert_eq!(ted.find(b"xxxxxxxxxxxxxxxxabc123xxxxxxxxxxxxxx").unwrap().start, 16);
-        assert_eq!(ted.find(b"xxxxxxxxxxxxxxxxxabc123xxxxxxxxxxxxx").unwrap().start, 17);
-        assert_eq!(ted.find(b"xxxxxxxxxxxxxxxxxxabc123xxxxxxxxxxxx").unwrap().start, 18);
-        assert_eq!(ted.find(b"abcabcxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx").unwrap().start, 0);
-        assert_eq!(ted.find(b"789xyzxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), None);
-        // TODO: test different alignments.
+    #[cfg(target_feature="avx2")]
+    use simd::x86::avx::u8x32;
+
+    fn one_pattern_inner<T: TeddySIMD>(needle: &str) {
+        let len = T::BLOCK_SIZE * 4;
+        let ted: Teddy<T> = Teddy::new(&vec![needle.as_bytes().to_vec()]).unwrap();
+
+        // Allocate a string just once. This ensures that its allocation has the same alignment
+        // throughout these tests.
+        let mut hay = Vec::with_capacity(T::BLOCK_SIZE * 4);
+        for needle_pos in 0..(len - needle.len() + 1) {
+            hay.clear();
+
+            // Embed the needle at offset `needle_pos` in a string of x's.
+            hay.extend(repeat('x' as u8).take(needle_pos));
+            hay.extend(needle.as_bytes().iter().cloned());
+            let len_left = len - hay.len();
+            hay.extend(repeat('x' as u8).take(len_left));
+
+            // Try starting from different offsets in the string. Since the fingerprint matching
+            // depends on memory alignment, this tests out different code paths.
+            for offset in 0..T::BLOCK_SIZE {
+                assert_eq!(ted.find(&hay[offset..]), ted.slow(&hay[offset..], 0));
+            }
+        }
     }
+
+    #[test]
+    fn one_pattern_128() {
+        one_pattern_inner::<u8x16>("abc");
+        one_pattern_inner::<u8x16>("ab");
+        one_pattern_inner::<u8x16>("a");
+    }
+
+    #[cfg(target_feature="avx2")]
+    #[test]
+    fn one_pattern_256() {
+        one_pattern_inner::<u8x32>("abc");
+        one_pattern_inner::<u8x32>("ab");
+        one_pattern_inner::<u8x32>("a");
+    }
+
 
     // TODO: these tests don't really end up testing anything. We need better choices for arbitrary
     // patterns and haystacks.
