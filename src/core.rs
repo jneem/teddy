@@ -421,13 +421,17 @@ impl<T: TeddySIMD> Teddy<T> {
     /// This is used when we don't have enough bytes in the haystack for our
     /// block based approach.
     fn slow(&self, haystack: &[u8], pos: usize) -> Option<Match> {
-        self.ac.find(&haystack[pos..]).next().map(|m| {
-            Match {
+        // Aho-Corasick finds matches in order of the end position, but we want them in order of
+        // the start position. Going through all matches and finding the one that starts earliest
+        // is not the most efficient way to solve this, but it isn't too wasteful since we only do
+        // it to small haystacks.
+        self.ac.find_overlapping(&haystack[pos..])
+            .min_by_key(|m| m.start)
+            .map(|m| Match {
                 pat: m.pati,
                 start: m.start + pos,
                 end: m.end + pos,
-            }
-        })
+            })
     }
 }
 
@@ -437,7 +441,7 @@ mod tests {
     use teddy_simd::TeddySIMD;
     use simd::u8x16;
     use std::iter::repeat;
-    //use quickcheck::TestResult;
+    use quickcheck::TestResult;
 
     #[cfg(target_feature="avx2")]
     use simd::x86::avx::u8x32;
@@ -481,34 +485,41 @@ mod tests {
         one_pattern_inner::<u8x32>("a");
     }
 
+    fn fast_equal_slow_inner<T: TeddySIMD>(
+        pats: Vec<Vec<u8>>,
+        haystack_prefix: Vec<u8>,
+        haystack_suffix: Vec<u8>)
+    -> TestResult {
+        if pats.is_empty() {
+            return TestResult::discard();
+        }
 
-    // TODO: these tests don't really end up testing anything. We need better choices for arbitrary
-    // patterns and haystacks.
-    /*
-    quickcheck! {
-        fn fast_equal_slow_128(pats: Vec<Vec<u8>>, haystack: Vec<u8>) -> TestResult {
-            if let Some(ted) = Teddy::<u8x16>::new(&pats) {
-                if let Some(res) = ted.slow(&haystack, 0) {
-                    return TestResult::from_bool(ted.find(&haystack) == Some(res));
-                }
-            }
+        // Hide one of the patterns in the haystack, so there is something to find.
+        let mut haystack = haystack_prefix;
+        haystack.extend_from_slice(&pats[0]);
+        haystack.extend_from_slice(&haystack_suffix);
+
+        if let Some(ted) = Teddy::<T>::new(&pats) {
+            let fast = ted.find(&haystack).unwrap();
+            let slow = ted.slow(&haystack, 0).unwrap();
+
+            TestResult::from_bool(fast.start == slow.start)
+        } else {
             TestResult::discard()
         }
     }
 
-
+    quickcheck! {
+        fn fast_equal_slow_128(pats: Vec<Vec<u8>>, hay_pref: Vec<u8>, hay_suf: Vec<u8>) -> TestResult {
+            fast_equal_slow_inner::<u8x16>(pats, hay_pref, hay_suf)
+        }
+    }
 
     #[cfg(target_feature="avx2")]
     quickcheck! {
-        fn fast_equal_slow_256(pats: Vec<Vec<u8>>, haystack: Vec<u8>) -> TestResult {
-            if let Some(ted) = Teddy::<u8x32>::new(&pats) {
-                if let Some(res) = ted.slow(&haystack, 0) {
-                    return TestResult::from_bool(ted.find(&haystack) == Some(res));
-                }
-            }
-            TestResult::discard()
+        fn fast_equal_slow_256(pats: Vec<Vec<u8>>, hay_pref: Vec<u8>, hay_suf: Vec<u8>) -> TestResult {
+            fast_equal_slow_inner::<u8x32>(pats, hay_pref, hay_suf)
         }
     }
-    */
 }
 
