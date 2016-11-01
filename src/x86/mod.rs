@@ -7,8 +7,10 @@ use simd;
 use Match;
 
 #[cfg(target_feature="avx2")]
+#[derive(Clone, Debug)]
 pub struct Teddy(TeddyInner<simd::x86::avx::u8x32>);
 #[cfg(all(not(target_feature="avx2"), target_feature="ssse3"))]
+#[derive(Clone, Debug)]
 pub struct Teddy(TeddyInner<simd::u8x16>);
 
 impl Teddy {

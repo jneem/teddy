@@ -3,6 +3,7 @@
 
 use Match;
 
+#[derive(Clone, Debug)]
 pub struct Teddy;
 
 impl Teddy {
