@@ -6,23 +6,19 @@ extern crate test;
 extern crate teddy;
 
 use regex_syntax::{CharClass, ClassRange};
-use simd::u8x16;
 use std::char;
 use std::mem;
 use test::Bencher;
 use teddy::Teddy;
 
-#[cfg(target_feature="avx2")]
-use simd::x86::avx::u8x32;
-
 static HAYSTACK: &'static str = include_str!("data/sherlock.txt");
 
 macro_rules! sherlock {
-    ($name:ident, $simd_type: ident, $pats:expr, $count:expr) => {
+    ($name:ident, $pats:expr, $count:expr) => {
         #[bench]
         fn $name(b: &mut Bencher) {
             let pats: Vec<Vec<u8>> = $pats.into_iter().map(|s| s.as_bytes().to_vec()).collect();
-            let ted = Teddy::<$simd_type>::new(&pats).unwrap();
+            let ted = Teddy::new(&pats).unwrap();
             b.bytes = HAYSTACK.len() as u64;
 
             b.iter(|| {
@@ -71,44 +67,15 @@ fn casei_multi(s: &[&str]) -> Vec<String> {
         .collect()
 }
 
-sherlock!(sherlock_names_128, u8x16, &["Sherlock", "Holmes"], 558);
-#[cfg(target_feature="avx2")]
-sherlock!(sherlock_names_256, u8x32, &["Sherlock", "Holmes"], 558);
-
-sherlock!(sherlock_names_casei_128, u8x16, casei_multi(&["Sherlock", "Holmes"]), 569);
-#[cfg(target_feature="avx2")]
-sherlock!(sherlock_names_casei_256, u8x32, casei_multi(&["Sherlock", "Holmes"]), 569);
-
-sherlock!(sherlock_names_casei_short_128, u8x16, casei_multi(&["She", "Hol"]), 1307);
-#[cfg(target_feature="avx2")]
-sherlock!(sherlock_names_casei_short_256, u8x32, casei_multi(&["She", "Hol"]), 1307);
-
-sherlock!(sherlock_names_more_casei_short_128, u8x16, casei_multi(&["She", "Hol", "Joh", "Wat", "Ire", "Adl"]), 1720);
-#[cfg(target_feature="avx2")]
-sherlock!(sherlock_names_more_casei_short_256, u8x32, casei_multi(&["She", "Hol", "Joh", "Wat", "Ire", "Adl"]), 1720);
-
+sherlock!(sherlock_names, &["Sherlock", "Holmes"], 558);
+sherlock!(sherlock_names_casei, casei_multi(&["Sherlock", "Holmes"]), 569);
+sherlock!(sherlock_names_casei_short, casei_multi(&["She", "Hol"]), 1307);
+sherlock!(sherlock_names_more_casei_short, casei_multi(&["She", "Hol", "Joh", "Wat", "Ire", "Adl"]), 1720);
 // This one doesn't have any matches, but the fingerprints should match a lot.
-sherlock!(sherlock_names_lower_128, u8x16, &["sherlock", "holmes"], 0);
-#[cfg(target_feature="avx2")]
-sherlock!(sherlock_names_lower_256, u8x32, &["sherlock", "holmes"], 0);
-
-sherlock!(sherlock_words_long_128, u8x16, &["pull", "cabby", "three", "side"], 348);
-#[cfg(target_feature="avx2")]
-sherlock!(sherlock_words_long_256, u8x32, &["pull", "cabby", "three", "side"], 348);
-
-sherlock!(sherlock_words_short_128, u8x16, &["pu", "ca", "th", "si"], 15202);
-#[cfg(target_feature="avx2")]
-sherlock!(sherlock_words_short_256, u8x32, &["pu", "ca", "th", "si"], 15202);
-
-sherlock!(sherlock_chars_128, u8x16, &["S", "H"], 2115);
-#[cfg(target_feature="avx2")]
-sherlock!(sherlock_chars_256, u8x32, &["S", "H"], 2115);
-
-sherlock!(sherlock_chars_rare_128, u8x16, &["Z", "X"], 12);
-#[cfg(target_feature="avx2")]
-sherlock!(sherlock_chars_rare_256, u8x32, &["Z", "X"], 12);
-
+sherlock!(sherlock_names_lower, &["sherlock", "holmes"], 0);
+sherlock!(sherlock_words_long, &["pull", "cabby", "three", "side"], 348);
+sherlock!(sherlock_words_short, &["pu", "ca", "th", "si"], 15202);
+sherlock!(sherlock_chars, &["S", "H"], 2115);
+sherlock!(sherlock_chars_rare, &["Z", "X"], 12);
 // The fingerprints here shouldn't match anything.
-sherlock!(sherlock_rare_128, u8x16, &["xyzxyz"], 0);
-#[cfg(target_feature="avx2")]
-sherlock!(sherlock_rare_256, u8x32, &["xyzxyz"], 0);
+sherlock!(sherlock_rare, &["xyzxyz"], 0);

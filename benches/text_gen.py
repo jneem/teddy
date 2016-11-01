@@ -53,19 +53,15 @@ extern crate simd;
 extern crate test;
 extern crate teddy;
 
-use simd::u8x16;
 use test::Bencher;
 use teddy::Teddy;
 
-#[cfg(target_feature="avx2")]
-use simd::x86::avx::u8x32;
-
 macro_rules! bench {
-    ($name:ident, $simd_type: ident, $pats:expr, $haystack:expr, $count:expr) => {
+    ($name:ident, $pats:expr, $haystack:expr, $count:expr) => {
         #[bench]
         fn $name(b: &mut Bencher) {
             let pats: Vec<Vec<u8>> = $pats.into_iter().map(|s| s.as_bytes().to_vec()).collect();
-            let ted = Teddy::<$simd_type>::new(&pats).unwrap();
+            let ted = Teddy::new(&pats).unwrap();
             b.bytes = $haystack.len() as u64;
 
             b.iter(|| {
@@ -115,8 +111,7 @@ def gen_set(name_prefix, needles_numbers, needles_lengths, needle_rarities, text
                 rs_file.write("""\nstatic %s: &'static str = include_str!("%s");\n""" % (hayname.upper(), filename))
                 for tl in text_lengths:
                     count = sum([text[:tl].count(n) for n in needles])
-                    rs_file.write("bench!({}_{}_sse, u8x16, {}, {}[0..{}], {});\n".format(hayname, tl, varname.upper(), hayname.upper(), tl, count));
-                    rs_file.write('#[cfg(target_feature="avx2")]\nbench!({}_{}_avx2, u8x32, {}, {}[0..{}], {});\n'.format(hayname, tl, varname.upper(), hayname.upper(), tl, count));
+                    rs_file.write("bench!({}_{}, {}, {}[0..{}], {});\n".format(hayname, tl, varname.upper(), hayname.upper(), tl, count));
 
 
 gen_set('rarity', [8], [1, 2, 3], needle_rarities, [2**16])

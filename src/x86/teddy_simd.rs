@@ -13,6 +13,10 @@
 //! minimal version of this sort of logical grouping. It may be worth expanding this module into an
 //! alternative to the `simd` crate.
 
+// Because this file conditionally compiles many things, some of the imports might only be used in
+// certain configurations.
+#![allow(unused_imports)]
+
 use simd::{bool8ix16, u8x16};
 use simd::x86::sse2::{u64x2, Sse2Bool8ix16};
 use simd::x86::ssse3::Ssse3U8x16;
@@ -25,17 +29,16 @@ use std::ptr;
 use simd::x86::avx::{bool8ix32, i8x32, u8x32, u64x4};
 
 // Here are some operations that we need but are not (currently) exposed by `simd`.
-// TODO: we're currently using x86_mm_testz_si128 unconditionally because it gives decent speedups
-// (up to 20%). However, this is part of SSE 4.1. Since we only really require SSSE3, we might want
-// to add a fallback.
 extern "platform-intrinsic" {
     fn simd_shuffle16<T, U>(x: T, y: T, idx: [u32; 16]) -> U;
+    #[cfg(target_feature="sse4.1")]
     fn x86_mm_testz_si128(x: u64x2, y: u64x2) -> i32;
-    #[cfg(target_feature="avx2")]
+}
+
+#[cfg(target_feature="avx2")]
+extern "platform-intrinsic" {
     fn x86_mm256_shuffle_epi8(x: i8x32, y: i8x32) -> i8x32;
-    #[cfg(target_feature="avx2")]
     fn x86_mm256_movemask_epi8(x: i8x32) -> i32;
-    #[cfg(target_feature="avx2")]
     fn x86_mm256_testz_si256(x: u64x4, y: u64x4) -> i32;
 }
 
@@ -85,9 +88,17 @@ impl TeddySIMD for u8x16 {
     fn extract(self, idx: u32) -> u8 { u8x16::extract(self, idx) }
     #[inline]
     fn replace(self, idx: u32, elem: u8) -> Self { u8x16::replace(self, idx, elem) }
+
+    #[cfg(target_feature="sse4.1")]
     #[inline]
     fn test_zero(self, other: Self) -> bool {
         unsafe { x86_mm_testz_si128(transmute(self), transmute(other)) != 0 }
+    }
+
+    #[cfg(not(target_feature="sse4.1"))]
+    #[inline]
+    fn test_zero(self, other: Self) -> bool {
+        (self & other).eq(u8x16::splat(0)).all()
     }
 
     #[inline]
@@ -228,7 +239,7 @@ mod tests {
     use simd::u8x16;
     #[cfg(target_feature="avx2")]
     use simd::x86::avx::u8x32;
-    use teddy_simd::TeddySIMD;
+    use super::TeddySIMD;
 
     #[test]
     fn right_shifts_128() {

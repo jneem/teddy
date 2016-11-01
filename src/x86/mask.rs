@@ -2,7 +2,7 @@ use std::cmp;
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Error as FmtError, Formatter};
 use std::usize;
-use teddy_simd::TeddySIMD;
+use x86::teddy_simd::TeddySIMD;
 
 /// A list of masks. This has length equal to the length of the fingerprint.
 /// The length of the fingerprint is always `max(3, len(smallest_substring))`.

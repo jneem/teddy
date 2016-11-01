@@ -7,9 +7,9 @@
 // except according to those terms.
 
 use aho_corasick::{Automaton, AcAutomaton, FullAcAutomaton};
-use mask::{Mask, Masks};
+use x86::mask::{Mask, Masks};
 use Match;
-use teddy_simd::{TeddySIMD, TeddySIMDBool};
+use x86::teddy_simd::{TeddySIMD, TeddySIMDBool};
 
 /// A SIMD accelerated multi substring searcher.
 #[derive(Debug, Clone)]
@@ -247,7 +247,7 @@ impl<T: TeddySIMD> Teddy<T> {
 
     /// Returns the approximate size on the heap used by this matcher.
     pub fn approximate_size(&self) -> usize {
-        self.pats.iter().fold(0, |a, b| a + b.len())
+        self.pats.iter().fold(0, |a, b| a + b.len()) + self.ac.heap_bytes()
     }
 
     fn find_loop<S: State<T>>(&self, haystack: &[u8], mut state: S) -> Option<Match> {
@@ -336,10 +336,6 @@ impl<T: TeddySIMD> Teddy<T> {
 
     /// Searches `haystack` for the substrings in this `Teddy`. If a match was
     /// found, then it is returned. Otherwise, `None` is returned.
-    // This function uses macros to expand out three different cases. Not all of the declared
-    // variables are really used in all the cases, and so we allow unused assignments in order to
-    // squelch those warnings.
-    #[allow(unused_assignments)]
     pub fn find(&self, haystack: &[u8]) -> Option<Match> {
         // If our haystack is too small, fall back to Aho-Corasick.
         if haystack.is_empty() || haystack.len() < 2 * T::BLOCK_SIZE {
@@ -437,8 +433,8 @@ impl<T: TeddySIMD> Teddy<T> {
 
 #[cfg(test)]
 mod tests {
-    use core::Teddy;
-    use teddy_simd::TeddySIMD;
+    use super::Teddy;
+    use x86::teddy_simd::TeddySIMD;
     use simd::u8x16;
     use std::iter::repeat;
     use quickcheck::TestResult;

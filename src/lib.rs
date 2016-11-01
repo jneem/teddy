@@ -328,9 +328,15 @@ extern crate simd;
 #[macro_use]
 extern crate quickcheck;
 
-mod core;
-mod mask;
-mod teddy_simd;
+#[cfg(any(target_feature="sse3", target_feature="avx2"))]
+mod x86;
+#[cfg(any(target_feature="sse3", target_feature="avx2"))]
+pub use x86::Teddy;
+
+#[cfg(not(any(target_feature="sse3", target_feature="avx2")))]
+mod fallback;
+#[cfg(not(any(target_feature="sse3", target_feature="avx2")))]
+pub use fallback::Teddy;
 
 /// Match reports match information.
 #[derive(Debug, Clone, PartialEq)]
@@ -343,6 +349,4 @@ pub struct Match {
     /// The end byte offset of the match. This is always `start + pat.len()`.
     pub end: usize,
 }
-
-pub use core::Teddy;
 
