@@ -134,13 +134,9 @@ At a high level, Teddy works somewhat similarly to the fingerprint algorithms
 published by Faro and Kulekci, but Teddy does it in a way that scales a bit
 better. Namely:
 
-1. Teddy's core algorithm scans the haystack in 16 byte chunks. 16 is
-   significant because it corresponds to the number of bytes in a SIMD vector.
-   If one used AVX2 instructions, then we could scan the haystack in 32 byte
-   chunks. Similarly, if one used AVX512 instructions, we could scan the
-   haystack in 64 byte chunks. Hyperscan implements SIMD + AVX2, we only
-   implement SIMD for the moment. (The author doesn't have a CPU with AVX2
-   support... yet.)
+1. Teddy's core algorithm scans the haystack in 16 or 32 byte chunks, depending
+   on your processor. We will describe the algorithm here for 16 byte chunks,
+   but the 32 byte case is similar.
 2. Bitwise operations are performed on each chunk to discover if any region of
    it matches a set of precomputed fingerprints from the patterns. If there are
    matches, then a verification step is performed. In this implementation, our
