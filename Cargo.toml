@@ -3,6 +3,9 @@ name = "teddy"
 version = "0.1.0"
 authors = ["Joe Neeman <joeneeman@gmail.com>"]
 license = "MIT/Apache-2.0"
+description = "A SIMD-accelerated multistring searcher."
+repository = "https://github.com/jneem/teddy"
+documentation = "https://jneem.github.io/teddy/teddy/index.html"
 
 [dependencies]
 aho-corasick = "0.5.1"
