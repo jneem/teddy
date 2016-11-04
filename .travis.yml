@@ -15,8 +15,8 @@ before_script:
 script:
 - |
   export RUSTFLAGS="-C target-cpu=native" &&
-  travis-cargo build --features="simd-accel" &&
-  travis-cargo test --features="simd-accel" &&
+  travis-cargo build --features simd-accel &&
+  travis-cargo test --features simd-accel &&
   travis-cargo doc
 after_success:
 - travis-cargo doc-upload
