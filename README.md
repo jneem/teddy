@@ -13,7 +13,7 @@ SSSE3 SIMD instructions. Moreover, it requires a nightly rust compiler. To set
 up Teddy for your rust project, add
 
 ```
-teddy = "0.1"
+teddy = { version = "0.1", features = "simd-accel" }
 ```
 
 to the `[dependencies]` section of your `Cargo.toml` file. Then you need to

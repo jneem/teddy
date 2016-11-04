@@ -18,23 +18,24 @@
 //! );
 //! ```
 
-#![feature(asm, associated_consts, cfg_target_feature, platform_intrinsics)]
+#![cfg_attr(feature="simd-accel", feature(asm, associated_consts, cfg_target_feature, platform_intrinsics))]
 
 extern crate aho_corasick;
+#[cfg(feature="simd-accel")]
 extern crate simd;
 
 #[cfg(test)]
 #[macro_use]
 extern crate quickcheck;
 
-#[cfg(any(target_feature="sse3", target_feature="avx2"))]
+#[cfg(all(feature="simd-accel", any(target_feature="sse3", target_feature="avx2")))]
 mod x86;
-#[cfg(any(target_feature="sse3", target_feature="avx2"))]
+#[cfg(all(feature="simd-accel", any(target_feature="sse3", target_feature="avx2")))]
 pub use x86::Teddy;
 
-#[cfg(not(any(target_feature="sse3", target_feature="avx2")))]
+#[cfg(not(all(feature="simd-accel", any(target_feature="sse3", target_feature="avx2"))))]
 mod fallback;
-#[cfg(not(any(target_feature="sse3", target_feature="avx2")))]
+#[cfg(not(all(feature="simd-accel", any(target_feature="sse3", target_feature="avx2"))))]
 pub use fallback::Teddy;
 
 /// Match reports match information.

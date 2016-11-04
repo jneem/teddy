@@ -30,5 +30,10 @@ impl Teddy {
     pub fn find(&self, _haystack: &[u8]) -> Option<Match> {
         unimplemented!();
     }
+
+    /// Were we compiled with SIMD support?
+    pub fn is_accelerated() -> bool {
+        false
+    }
 }
 
