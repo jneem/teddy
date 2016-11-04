@@ -226,16 +226,18 @@ impl<T: TeddySIMD> Teddy<T> {
     ///
     /// If a `Teddy` matcher could not be created (i.e., `pats` is empty or has
     /// an empty substring), then `None` is returned.
-    pub fn new(pats: &[Vec<u8>]) -> Option<Teddy<T>> {
+    pub fn new<'a, I>(pats: I) -> Option<Teddy<T>> where I: IntoIterator<Item=&'a [u8]> {
+        let pats: Vec<Vec<u8>> = pats.into_iter().map(|p| p.to_vec()).collect();
         if pats.is_empty() || pats.iter().any(|p| p.is_empty()) {
             None
         } else {
-            let (buckets, masks) = Masks::buckets_and_masks(pats);
+            let (buckets, masks) = Masks::buckets_and_masks(&pats);
+            let ac = FullAcAutomaton::new(AcAutomaton::new(pats.clone()));
             Some(Teddy {
-                pats: pats.to_vec(),
+                pats: pats,
                 buckets: buckets,
                 masks: masks,
-                ac: FullAcAutomaton::new((AcAutomaton::new(pats.to_vec()))),
+                ac: ac,
             })
         }
     }
@@ -444,7 +446,7 @@ mod tests {
 
     fn one_pattern_inner<T: TeddySIMD>(needle: &str) {
         let len = T::BLOCK_SIZE * 4;
-        let ted: Teddy<T> = Teddy::new(&vec![needle.as_bytes().to_vec()]).unwrap();
+        let ted: Teddy<T> = Teddy::new(vec![needle.as_bytes()]).unwrap();
 
         // Allocate a string just once. This ensures that its allocation has the same alignment
         // throughout these tests.
@@ -495,7 +497,7 @@ mod tests {
         haystack.extend_from_slice(&pats[0]);
         haystack.extend_from_slice(&haystack_suffix);
 
-        if let Some(ted) = Teddy::<T>::new(&pats) {
+        if let Some(ted) = Teddy::<T>::new(pats.iter().map(|x| &x[..])) {
             let fast = ted.find(&haystack).unwrap();
             let slow = ted.slow(&haystack, 0).unwrap();
 

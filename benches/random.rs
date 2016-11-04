@@ -12,8 +12,7 @@ macro_rules! bench {
     ($name:ident, $pats:expr, $haystack:expr, $count:expr) => {
         #[bench]
         fn $name(b: &mut Bencher) {
-            let pats: Vec<Vec<u8>> = $pats.into_iter().map(|s| s.as_bytes().to_vec()).collect();
-            let ted = Teddy::new(&pats).unwrap();
+            let ted = Teddy::new($pats.iter().map(|s| s.as_bytes())).unwrap();
             b.bytes = $haystack.len() as u64;
 
             b.iter(|| {

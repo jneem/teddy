@@ -6,12 +6,8 @@
 //! ```
 //! use teddy::{Match, Teddy};
 //!
-//! let patterns = vec![
-//!     b"cat".to_vec(),
-//!     b"dog".to_vec(),
-//!     b"fox".to_vec(),
-//! ];
-//! let ted = Teddy::new(&patterns).unwrap();
+//! let patterns = vec![b"cat", b"dog", b"fox"];
+//! let ted = Teddy::new(patterns.iter().map(|s| &s[..])).unwrap();
 //! assert_eq!(
 //!     Some(Match { pat: 2, start: 16, end: 19 }),
 //!     ted.find(b"The quick brown fox jumped over the laxy dog.")

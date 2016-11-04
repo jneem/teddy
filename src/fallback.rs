@@ -11,7 +11,7 @@ impl Teddy {
     ///
     /// If a `Teddy` matcher could not be created (i.e., `pats` is empty or has
     /// an empty substring), then `None` is returned.
-    pub fn new(_pats: &[Vec<u8>]) -> Option<Teddy> {
+    pub fn new<'a, I>(_pats: I) -> Option<Teddy> where I: IntoIterator<Item=&'a [u8]> {
         None
     }
 

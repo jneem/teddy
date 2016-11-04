@@ -17,8 +17,7 @@ macro_rules! sherlock {
     ($name:ident, $pats:expr, $count:expr) => {
         #[bench]
         fn $name(b: &mut Bencher) {
-            let pats: Vec<Vec<u8>> = $pats.into_iter().map(|s| s.as_bytes().to_vec()).collect();
-            let ted = Teddy::new(&pats).unwrap();
+            let ted = Teddy::new($pats.iter().map(|s| s.as_bytes())).unwrap();
             b.bytes = HAYSTACK.len() as u64;
 
             b.iter(|| {
