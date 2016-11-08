@@ -3,7 +3,10 @@ teddy
 
 Teddy is a SIMD accelerated multiple substring matching algorithm, and this is
 an implementation of it in rust. The name and the core ideas in the algorithm
-were learned from the [Hyperscan][1_u] project.
+were learned from the [Hyperscan][1_u] project, and this implementation was
+originally taken from the
+[regex](https://github.com/rust-lang-nursery/regex/blob/b2419df8fdc4df6fcd33d1bd303581b2491ca113/src/simd_accel/teddy128.rs)
+crate.
 
 Installation and usage
 ----------------------
@@ -51,11 +54,21 @@ fn main() {
 
 For more information, see the [API documentation](https://jneem.github.io/teddy/teddy/index.html).
 
+Acknowledgements
+----------------
+
+Although it might look like this crate is mainly my work, it isn't really.
+I started out by lifting Andrew Gallant's code straight from the `regex` crate.
+Although much of that code has been replaced now, the current implementation
+still owes a lot to the documentation below, which was produced by Andrew
+Gallant after he pored for who-knows-how-long over Hyperscan's undocumented
+code.
+
 Background
 ----------
 
 The key idea of Teddy is to do *packed* substring matching. In the literature,
-packed substring matching is the idea of examing multiple bytes in a haystack
+packed substring matching is the idea of examining multiple bytes in a haystack
 at a time to detect matches. Implementations of, for example, memchr (which
 detects matches of a single byte) have been doing this for years. Only
 recently, with the introduction of various SIMD instructions, has this been
