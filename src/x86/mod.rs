@@ -8,16 +8,18 @@ use Match;
 
 #[cfg(target_feature="avx2")]
 #[derive(Clone, Debug)]
+/// A SIMD accelerated multi substring searcher.
 pub struct Teddy(TeddyInner<simd::x86::avx::u8x32>);
 #[cfg(all(not(target_feature="avx2"), target_feature="ssse3"))]
 #[derive(Clone, Debug)]
+/// A SIMD accelerated multi substring searcher.
 pub struct Teddy(TeddyInner<simd::u8x16>);
 
 impl Teddy {
     /// Create a new `Teddy` multi substring matcher.
     ///
-    /// If a `Teddy` matcher could not be created (i.e., `pats` is empty or has
-    /// an empty substring), then `None` is returned.
+    /// If a `Teddy` matcher could not be created (e.g., `pats` is empty or contains an empty
+    /// pattern), then `None` is returned.
     pub fn new<'a, I>(pats: I) -> Option<Teddy> where I: IntoIterator<Item=&'a [u8]> {
         TeddyInner::new(pats).map(|t| Teddy(t))
     }
@@ -32,15 +34,16 @@ impl Teddy {
         self.0.approximate_size()
     }
 
-    /// Searches `haystack` for the substrings in this `Teddy`. If a match was
-    /// found, then it is returned. Otherwise, `None` is returned.
+    /// Searches `haystack` for the substrings in this `Teddy`. Returns the first match if one
+    /// exists, and otherwise `None`.
     pub fn find(&self, haystack: &[u8]) -> Option<Match> {
         self.0.find(haystack)
     }
 
-    /// Were we compiled with SIMD support?
+    /// Were we compiled with SIMD support? If not, `Teddy::new` will always just return `None`.
+    ///
+    /// See the README for more information on how to compile `teddy` with SIMD support.
     pub fn is_accelerated() -> bool {
         true
     }
-
 }

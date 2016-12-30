@@ -16,7 +16,7 @@ SSSE3 SIMD instructions. Moreover, it requires a nightly rust compiler. To set
 up Teddy for your rust project, add
 
 ```
-teddy = { version = "0.1", features = "simd-accel" }
+teddy = { version = "0.2", features = "simd-accel" }
 ```
 
 to the `[dependencies]` section of your `Cargo.toml` file. Then you need to
@@ -53,6 +53,38 @@ fn main() {
 ```
 
 For more information, see the [API documentation](https://jneem.github.io/teddy/teddy/index.html).
+
+What if I don't have SSSE3 or a nightly compiler?
+-------------------------------------------------
+
+Then Teddy won't do much for you. For your convenience, however, Teddy will
+compile even if you don't have a nightly compiler or support for the right
+instruction set. In this case, Teddy will refuse at run-time to give you
+accelerated searches: specifically, `Teddy::new` will always return `None`. You
+can also check for acceleration support using `Teddy::is_accelerated`.
+
+There is a reason that this crate supports being compiled without any of its
+useful parts. This way, your program or library can depend on Teddy
+unconditionally without sacrificing support for stable rust compilers. To get
+this working, add a dependency on `teddy` *without* the `simd-accel` feature:
+
+```
+[dependencies]
+teddy = "0.2"
+```
+
+Then add a `simd-accel` feature to your project that just passes the
+`simd-accel` feature onto `teddy`:
+
+```
+[features]
+simd-accel = ["teddy/simd-accel"]
+```
+
+Now, anyone who compiles your crate using `cargo build` will get
+a non-accelerated version. Anyone who builds your crate with `cargo build
+--features=simd-accel` will get an accelerated version, but they'd better be
+using a nightly compiler and have the right target features set up.
 
 Acknowledgements
 ----------------
