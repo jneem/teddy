@@ -281,54 +281,50 @@ impl<T: TeddySIMD> Teddy<T> {
 
         // The main loop (in which the loads are all aligned). The control flow here is a bit
         // funky. Logically, we want:
-        //    while ... {
-        //        state.update(...);
-        //        if state.needs_verify() {
-        //            ...
+        //    while pos < end {
+        //        // do something
+        //        if cond {
+        //            // do something else
         //        }
         //    }
         // Instead, we write:
-        //    while ... {
-        //        while ... {
-        //            state.update(...);
-        //            if state.needs_verify() {
-        //                break;
-        //            }
-        //        }
-        //        verify();
-        //    }
-        // This weird double-loop version is faster when verifying is rare (and if it isn't rare
-        // then you should be using Teddy anyway). Also, we can unroll the inner loop for another
-        // little boost.
-        //
-        // Duplicating the conditionals is a little unfortunate, but the only way I found to avoid
-        // it was using labelled loops. That works, but spits out a huge number of
-        // (un-shut-up-able) warnings because labels aren't hygienic in macros.
+        //  'outer: loop {
+        //      loop {
+        //         if pos >= end { break 'outer; }
+        //         // do something
+        //         if cond { break; }
+        //      }
+        //      // do something else
+        //  }
+        // This weird double-loop version is faster when `cond` is usually false (and if it isn't
+        // usually false then you shouldn't be using Teddy anyway). Also, we can unroll the inner
+        // loop for another little boost.
         let end = len.saturating_sub(2 * T::BLOCK_SIZE - 1);
-        while pos < end {
-            while pos < end {
+        'outer: loop {
+            'inner: loop {
+                if pos >= end { break 'outer; }
+
                 let hay = unsafe { *(haystack.get_unchecked(pos) as *const u8 as *const T) };
                 state.update(hay);
                 if state.needs_verify() {
-                    break;
+                    break 'inner;
                 }
                 pos += T::BLOCK_SIZE;
 
                 let hay = unsafe { *(haystack.get_unchecked(pos) as *const u8 as *const T) };
                 state.update(hay);
                 if state.needs_verify() {
-                    break;
+                    break 'inner;
                 }
                 pos += T::BLOCK_SIZE;
             }
 
-            if state.needs_verify() {
-                let start_pos = pos - state.offset();
-                if let Some(m) = self.verify(haystack, start_pos, state.result()) {
-                    return Some(m);
-                }
-                pos += T::BLOCK_SIZE;
+            // If we got here, it means that a fingerprint matched and we need to verify it.
+            let start_pos = pos - state.offset();
+            if let Some(m) = self.verify(haystack, start_pos, state.result()) {
+                return Some(m);
             }
+            pos += T::BLOCK_SIZE;
         }
 
         // Do a slow search through the last part of the haystack, which was not big enough to do
