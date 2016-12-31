@@ -20,6 +20,11 @@ impl Teddy {
     ///
     /// If a `Teddy` matcher could not be created (e.g., `pats` is empty or contains an empty
     /// pattern), then `None` is returned.
+    ///
+    /// # Warning
+    ///
+    /// If `teddy` was built without SIMD support, then this method will *always* return `None`.
+    /// See the README for more information on how to compile `teddy` with SIMD support.
     pub fn new<'a, I>(pats: I) -> Option<Teddy> where I: IntoIterator<Item=&'a [u8]> {
         TeddyInner::new(pats).map(|t| Teddy(t))
     }

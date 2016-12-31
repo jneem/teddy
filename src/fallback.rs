@@ -11,6 +11,11 @@ impl Teddy {
     ///
     /// If a `Teddy` matcher could not be created (i.e., `pats` is empty or has
     /// an empty substring), then `None` is returned.
+    ///
+    /// # Warning
+    ///
+    /// If `teddy` was built without SIMD support, then this method will *always* return `None`.
+    /// See the README for more information on how to compile `teddy` with SIMD support.
     pub fn new<'a, I>(_pats: I) -> Option<Teddy> where I: IntoIterator<Item=&'a [u8]> {
         None
     }
@@ -25,13 +30,15 @@ impl Teddy {
         unimplemented!();
     }
 
-    /// Searches `haystack` for the substrings in this `Teddy`. If a match was
-    /// found, then it is returned. Otherwise, `None` is returned.
+    /// Searches `haystack` for the substrings in this `Teddy`. Returns the first match if one
+    /// exists, and otherwise `None`.
     pub fn find(&self, _haystack: &[u8]) -> Option<Match> {
         unimplemented!();
     }
 
-    /// Were we compiled with SIMD support?
+    /// Were we compiled with SIMD support? If not, `Teddy::new` will always just return `None`.
+    ///
+    /// See the README for more information on how to compile `teddy` with SIMD support.
     pub fn is_accelerated() -> bool {
         false
     }
