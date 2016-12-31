@@ -37,6 +37,8 @@ extern "platform-intrinsic" {
 
 #[cfg(target_feature="avx2")]
 extern "platform-intrinsic" {
+    #[cfg(not(feature="asm"))]
+    fn simd_shuffle32<T, U>(x: T, y: T, idx: [u32; 32]) -> U;
     fn x86_mm256_shuffle_epi8(x: i8x32, y: i8x32) -> i8x32;
     fn x86_mm256_movemask_epi8(x: i8x32) -> i32;
     fn x86_mm256_testz_si256(x: u64x4, y: u64x4) -> i32;
@@ -49,7 +51,10 @@ pub trait TeddySIMDBool: Clone + Copy + Sized {
 
 /// This trait contains all the SIMD operations necessary for implementing the Teddy algorithm.
 pub trait TeddySIMD: BitAnd<Output=Self> + Clone + Copy + Debug + Shr<u8, Output=Self> + Sized {
-    const BLOCK_SIZE: usize;
+    /// How many bytes fit into this SIMD type?
+    ///
+    /// This should probably be an associated const, but those aren't stable.
+    fn block_size() -> usize;
 
     /// The boolean version of this vector.
     type Bool: TeddySIMDBool;
@@ -77,9 +82,10 @@ pub trait TeddySIMD: BitAnd<Output=Self> + Clone + Copy + Debug + Shr<u8, Output
 }
 
 impl TeddySIMD for u8x16 {
-    const BLOCK_SIZE: usize = 16;
     type Bool = bool8ix16;
 
+    #[inline]
+    fn block_size() -> usize { 16 }
     #[inline]
     fn ne(self, other: Self) -> Self::Bool { u8x16::ne(self, other) }
     #[inline]
@@ -139,9 +145,10 @@ impl TeddySIMDBool for bool8ix16 {
 
 #[cfg(target_feature="avx2")]
 impl TeddySIMD for u8x32 {
-    const BLOCK_SIZE: usize = 32;
     type Bool = bool8ix32;
 
+    #[inline]
+    fn block_size() -> usize { 32 }
     #[inline]
     fn ne(self, other: Self) -> Self::Bool { u8x32::ne(self, other) }
     #[inline]
@@ -155,6 +162,19 @@ impl TeddySIMD for u8x32 {
         unsafe { x86_mm256_testz_si256(transmute(self), transmute(other)) != 0 }
     }
 
+    #[cfg(not(feature="asm"))]
+    #[inline]
+    fn right_shift_1(left: Self, right: Self) -> Self {
+        unsafe { simd_shuffle32(left, right, [31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57 ,58, 59, 60, 61, 62]) }
+    }
+
+    #[cfg(not(feature="asm"))]
+    #[inline]
+    fn right_shift_2(left: Self, right: Self) -> Self {
+        unsafe { simd_shuffle32(left, right, [30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57 ,58, 59, 60, 61]) }
+    }
+
+    #[cfg(feature="asm")]
     #[inline]
     fn right_shift_1(left: Self, right: Self) -> Self {
         // It would be nicer just to use an intrinsic for this shuffle, but LLVM generates four
@@ -195,6 +215,7 @@ impl TeddySIMD for u8x32 {
         }
     }
 
+    #[cfg(feature="asm")]
     #[inline]
     fn right_shift_2(left: Self, right: Self) -> Self {
         unsafe {

@@ -269,11 +269,11 @@ impl<T: TeddySIMD> Teddy<T> {
             }
         }
 
-        // Increment pos by up to BLOCK_SIZE, but only as far as the next alignment boundary.
-        let pos_align = (haystack.as_ptr() as usize + pos) % T::BLOCK_SIZE;
-        pos = pos + T::BLOCK_SIZE - pos_align;
+        // Increment pos by up to block_size, but only as far as the next alignment boundary.
+        let pos_align = (haystack.as_ptr() as usize + pos) % T::block_size();
+        pos = pos + T::block_size() - pos_align;
 
-        // Since we shifted by an amount not necessarily equal to BLOCK_SIZE, the state preserved
+        // Since we shifted by an amount not necessarily equal to block_size, the state preserved
         // in `state` cannot necessarily be used for the next iteration. Here, we reset the state.
         // This allows some false positives in the fingerprint matching step, but only on the first
         // iteration through the inner loop that follows.
@@ -299,7 +299,7 @@ impl<T: TeddySIMD> Teddy<T> {
         // This weird double-loop version is faster when `cond` is usually false (and if it isn't
         // usually false then you shouldn't be using Teddy anyway). Also, we can unroll the inner
         // loop for another little boost.
-        let end = len.saturating_sub(2 * T::BLOCK_SIZE - 1);
+        let end = len.saturating_sub(2 * T::block_size() - 1);
         'outer: loop {
             'inner: loop {
                 if pos >= end { break 'outer; }
@@ -309,14 +309,14 @@ impl<T: TeddySIMD> Teddy<T> {
                 if state.needs_verify() {
                     break 'inner;
                 }
-                pos += T::BLOCK_SIZE;
+                pos += T::block_size();
 
                 let hay = unsafe { *(haystack.get_unchecked(pos) as *const u8 as *const T) };
                 state.update(hay);
                 if state.needs_verify() {
                     break 'inner;
                 }
-                pos += T::BLOCK_SIZE;
+                pos += T::block_size();
             }
 
             // If we got here, it means that a fingerprint matched and we need to verify it.
@@ -324,7 +324,7 @@ impl<T: TeddySIMD> Teddy<T> {
             if let Some(m) = self.verify(haystack, start_pos, state.result()) {
                 return Some(m);
             }
-            pos += T::BLOCK_SIZE;
+            pos += T::block_size();
         }
 
         // Do a slow search through the last part of the haystack, which was not big enough to do
@@ -336,7 +336,7 @@ impl<T: TeddySIMD> Teddy<T> {
     /// found, then it is returned. Otherwise, `None` is returned.
     pub fn find(&self, haystack: &[u8]) -> Option<Match> {
         // If our haystack is too small, fall back to Aho-Corasick.
-        if haystack.is_empty() || haystack.len() < 2 * T::BLOCK_SIZE {
+        if haystack.is_empty() || haystack.len() < 2 * T::block_size() {
             return self.slow(haystack, 0);
         }
 
@@ -441,12 +441,12 @@ mod tests {
     use simd::x86::avx::u8x32;
 
     fn one_pattern_inner<T: TeddySIMD>(needle: &str) {
-        let len = T::BLOCK_SIZE * 4;
+        let len = T::block_size() * 4;
         let ted: Teddy<T> = Teddy::new(vec![needle.as_bytes()]).unwrap();
 
         // Allocate a string just once. This ensures that its allocation has the same alignment
         // throughout these tests.
-        let mut hay = Vec::with_capacity(T::BLOCK_SIZE * 4);
+        let mut hay = Vec::with_capacity(T::block_size() * 4);
         for needle_pos in 0..(len - needle.len() + 1) {
             hay.clear();
 
@@ -458,7 +458,7 @@ mod tests {
 
             // Try starting from different offsets in the string. Since the fingerprint matching
             // depends on memory alignment, this tests out different code paths.
-            for offset in 0..T::BLOCK_SIZE {
+            for offset in 0..T::block_size() {
                 assert_eq!(ted.find(&hay[offset..]), ted.slow(&hay[offset..], 0));
             }
         }

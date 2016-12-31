@@ -17,6 +17,7 @@ regex-syntax = "0.3"
 
 [features]
 simd-accel = ["simd"]
+asm = []
 
 [profile.bench]
 debug = true

@@ -321,7 +321,7 @@ impl<T: TeddySIMD> Mask<T> {
         let lo = self.lo.extract(byte_lo) | ((1 << bucket) as u8);
         let hi = self.hi.extract(byte_hi) | ((1 << bucket) as u8);
 
-        for lane in 0..(T::BLOCK_SIZE as u32 / 16) {
+        for lane in 0..(T::block_size() as u32 / 16) {
             self.lo = self.lo.replace(byte_lo + 16 * lane, lo);
             self.hi = self.hi.replace(byte_hi + 16 * lane, hi);
         }

@@ -27,7 +27,8 @@
 //! details.
 
 #![deny(missing_docs)]
-#![cfg_attr(feature="simd-accel", feature(asm, associated_consts, cfg_target_feature, platform_intrinsics))]
+#![cfg_attr(feature="simd-accel", feature(cfg_target_feature, platform_intrinsics))]
+#![cfg_attr(feature="asm", feature(asm))]
 
 extern crate aho_corasick;
 #[cfg(feature="simd-accel")]
