@@ -9,7 +9,7 @@
 use aho_corasick::{Automaton, AcAutomaton, FullAcAutomaton};
 use x86::mask::{Mask, Masks};
 use Match;
-use x86::teddy_simd::{TeddySIMD, TeddySIMDBool};
+use x86::teddy_simd::TeddySIMD;
 
 /// A SIMD accelerated multi substring searcher.
 #[derive(Debug, Clone)]
@@ -29,27 +29,78 @@ pub struct Teddy<T: TeddySIMD> {
 
 /// `State<T>` represents the state that we need to maintain in the Teddy inner loop.
 ///
-/// The main job of the inner loop is to keep calling `update` with new input until `needs_verify`
-/// returns true. Therefore, these should be the most optimized operations.
+/// For the case of one-byte fingerprints (i.e. the case described in the README), there isn't
+/// really any state that needs to be kept. So let's think about the case of a two-byte
+/// fingerprint.
+///
+/// As in the README, suppose that `B` contains a block of bytes from the haystack. Now we have two
+/// sets of masks (the `A` variables from the README), one for the first byte of the fingerprint and
+/// one for the second. We do the shuffling and `and`ing as described in the README, but twice:
+/// once for each byte of the fingerprint. Let's call the results `C` (from the first byte of the
+/// fingerprint) and `D` (from the second byte). Then the byte `i` of `C` is a bitset telling
+/// us which patterns have their first byte equal to byte `i` of the input. `D` is similar, but
+/// for the second byte of the patterns. Now, what we actually want is to find a position `i` such
+/// that the `i-1`th byte of input matches the first byte of a pattern and the `i`th byte of input
+/// matches the second byte of the pattern. To do this, we just shift `C` to the right by one byte
+/// and then `and` it with `D`.
+///
+/// To return to the example of the README, suppose that the input is "bat_cat_foo_bump" and our
+/// two-byte fingerprints are "fo" and "ba". Then `C` is looking for 'f' and 'b', while `D` is
+/// looking for 'o' and 'a':
+///
+/// ```text
+/// B = b   a   t   _   c   a   t   _   f   o   o   _   b   u   m   p
+/// C = 10  00  00  00  00  00  00  00  01  00  00  00  10  00  00  00
+/// D = 00  10  00  00  00  10  00  00  00  01  01  00  00  00  00  00
+/// ```
+///
+/// Now we shift `C` to make it align with `D`, and `and` them together to get `result`.
+///
+/// ```text
+///     index = 0   1   2   3   4   5   6   7   8   9   A   B   C   D   E   F
+/// shifted C = ??  10  00  00  00  00  00  00  00  01  00  00  00  10  00  00
+///         D = 00  10  00  00  00  10  00  00  00  01  01  00  00  00  00  00
+///    result = 00  10  00  00  00  00  00  00  00  01  00  00  00  00  00  00
+/// ```
+///
+/// So, we see that the second fingerprint ("ba") matches at index 1, while the first fingerprint
+/// ("fo") matches at index 9. (Note that these are the indices where the *end* of the fingerprints
+/// match.)
+///
+/// But there's something obviously missing: what should go in the place of `??` above? In this
+/// case, it doesn't matter since the first byte of `D` is zero. But in general, it should clearly
+/// be the last byte of the `C` that came from the *previous* block of input. This is the state
+/// that we need to keep track of as we process the input block-by-block. We keep the last value of
+/// `C`, and when we right-shift the new value of `C`, we also shift in the last byte of the old
+/// value.
+///
+/// The case of three-byte fingerprints is basically the same story as above, except that we need
+/// to keep two values from the previous block of input. One will get right-shifted by one byte and
+/// the other will get right-shifted by two bytes.
+///
+/// Finally, we get to the purpose of `State<T>`. All it does is to encapsulate the shuffling,
+/// shifting, anding, and state-keeping. The user of `State<T>` doesn't need to care how many bytes
+/// the fingerprint has: they just pass in a block of input and get back a buch of bitfields
+/// (`combined`, in the diagram above).
 trait State<T> {
-    /// Forget all the existing state.
+    /// Feeds a block of input text into the algorithm, and returns a bitfield with all matching
+    /// fingerprints.
+    ///
+    /// The return value is in the format of `result` in the documentation for `State<T>`. That
+    /// is, byte `i` of the return value is the set of fingerprints that had a match ending at byte
+    /// `i` of the input.
+    fn process_input(&mut self, input: T) -> T;
+
+    /// Forgets all the existing state.
     fn reset(&mut self);
 
-    /// Update the state to reflect reading in a new block of input.
-    fn update(&mut self, input: T);
-
-    /// After reading in the most recent block of input, did a fingerprint match? If so, we need to
-    /// verify whether there was a full match.
-    fn needs_verify(&self) -> bool;
-
-    /// The SIMD vector showing all the matched fingerprints. In the crate documentation, this is
-    /// `C`.
-    fn result(&self) -> T;
-
-    /// If this state represents a multi-byte fingerprint, the matches it finds are offset from the
-    /// block of input that we got in `update`. This returns the size of that offset: if we got a
-    /// block of input starting at index `pos` then we are looking for fingerprints starting from
-    /// index `pos - self.offset()`.
+    /// The length of a fingerprint, minus one.
+    ///
+    /// There is a point that we sort of neglected in the documentation for `State<T>`: thanks to
+    /// all the shifting, we find the position of the *end* of a fingerprint. But of course, our
+    /// client is more interested in the start of the match. This function (which should really be
+    /// an associated constant, but they aren't stable) tells us how much we need to subtract from
+    /// the end of a fingerprint in order to get to the start of it.
     fn offset(&self) -> usize;
 }
 
@@ -66,13 +117,6 @@ fn nybble_input<T: TeddySIMD>(haystack_block: T) -> (T, T) {
 
 struct State1<T: TeddySIMD> {
     mask: Mask<T>,
-    /// The result of shuffling the high nybbles (i.e. `C1` in the crate documentation).
-    res_hi: T,
-    /// The result of shuffling the low nybbles (i.e. `C0` in the crate documentation).  According
-    /// to the crate documentation, it would seem more sensible to just store the AND of `res_hi`
-    /// and `res_lo`. The reason we store them separately is an optimization: the `vptest`
-    /// instruction means that we can avoid explicitly ANDing these together in the fast path.
-    res_lo: T,
 }
 
 struct State2<T: TeddySIMD> {
@@ -80,36 +124,27 @@ struct State2<T: TeddySIMD> {
     mask0: Mask<T>,
     /// The mask for the second byte of the fingerprint.
     mask1: Mask<T>,
-    /// The result (i.e. `C` in the crate documentation) of searching for the first byte of the
-    /// fingerprint, but for the old block of input.
+    /// The result of searching for the first byte of the fingerprint, but for the old block of
+    /// input.
     prev0: T,
-    /// We compute `C` for the first byte of the fingerprint, then we shift it one byte to the left
-    /// and shift in the last byte of `prev0`. The answer goes here.
-    res0: T,
-    /// This is `C` for the second byte of the fingerprint. Thanks to the shifting that went into
-    /// defining `res0`, these two line up.
-    res1: T,
 }
 
 struct State3<T: TeddySIMD> {
     mask0: Mask<T>,
     mask1: Mask<T>,
     mask2: Mask<T>,
+    /// The result of searching for the first byte of the fingerprint, but for the old block of
+    /// input.
     prev0: T,
+    /// The result of searching for the second byte of the fingerprint, but for the old block of
+    /// input.
     prev1: T,
-    /// As in `State2`, but shifted by two bytes instead of one.
-    res0: T,
-    /// Pretend that we had `res1` and `res2`, which are analogous to `res0` but with different
-    /// amounts of shift. Then this is `res1 & res2`.
-    res12: T,
 }
 
 impl<T: TeddySIMD> State1<T> {
     fn new(masks: &Masks<T>) -> State1<T> {
         State1 {
             mask: masks.0[0],
-            res_hi: T::splat(0),
-            res_lo: T::splat(0),
         }
     }
 }
@@ -118,21 +153,13 @@ impl<T: TeddySIMD> State<T> for State1<T> {
     fn reset(&mut self) {}
     fn offset(&self) -> usize { 0 }
 
+    // This is the main operation in the case of single-byte fingerprints. I.e., it's the one that
+    // the README describes in such great detail. In terms of the names that the README uses, we
+    // take `B` as input and return `C`. `A0` and `A1` are stored in `self.mask`.
     #[inline(always)]
-    fn update(&mut self, input: T) {
+    fn process_input(&mut self, input: T) -> T {
         let (hi, lo) = nybble_input(input);
-        self.res_hi = self.mask.hi.shuffle_bytes(hi);
-        self.res_lo = self.mask.lo.shuffle_bytes(lo);
-    }
-
-    #[inline(always)]
-    fn needs_verify(&self) -> bool {
-        !self.res_hi.test_zero(self.res_lo)
-    }
-
-    #[inline(always)]
-    fn result(&self) -> T {
-        self.res_hi & self.res_lo
+        self.mask.hi.shuffle_bytes(hi) & self.mask.lo.shuffle_bytes(lo)
     }
 }
 
@@ -142,8 +169,6 @@ impl<T: TeddySIMD> State2<T> {
             mask0: masks.0[0],
             mask1: masks.0[1],
             prev0: T::splat(0xFF),
-            res0: T::splat(0),
-            res1: T::splat(0),
         }
     }
 }
@@ -152,26 +177,19 @@ impl<T: TeddySIMD> State<T> for State2<T> {
     fn reset(&mut self) {
         self.prev0 = T::splat(0xFF);
     }
+
     fn offset(&self) -> usize { 1 }
 
+    // This is the main operation in the case of two-byte fingerprints. I.e., it's the one that
+    // the documentation for `State<T>` describes in such great detail.
     #[inline(always)]
-    fn update(&mut self, input: T) {
+    fn process_input(&mut self, input: T) -> T {
         let (hi, lo) = nybble_input(input);
         let shuf0 = self.mask0.hi.shuffle_bytes(hi) & self.mask0.lo.shuffle_bytes(lo);
-
-        self.res0 = T::right_shift_1(self.prev0, shuf0);
-        self.res1 = self.mask1.hi.shuffle_bytes(hi) & self.mask1.lo.shuffle_bytes(lo);
+        let res0 = T::right_shift_1(self.prev0, shuf0);
+        let res1 = self.mask1.hi.shuffle_bytes(hi) & self.mask1.lo.shuffle_bytes(lo);
         self.prev0 = shuf0;
-    }
-
-    #[inline(always)]
-    fn needs_verify(&self) -> bool {
-        !self.res0.test_zero(self.res1)
-    }
-
-    #[inline(always)]
-    fn result(&self) -> T {
-        self.res0 & self.res1
+        res0 & res1
     }
 }
 
@@ -183,8 +201,6 @@ impl<T: TeddySIMD> State3<T> {
             mask2: masks.0[2],
             prev0: T::splat(0xFF),
             prev1: T::splat(0xFF),
-            res0: T::splat(0),
-            res12: T::splat(0),
         }
     }
 }
@@ -196,28 +212,20 @@ impl<T: TeddySIMD> State<T> for State3<T> {
     }
     fn offset(&self) -> usize { 2 }
 
+    // This is the main operation in the case of three-byte fingerprints. It isn't described in
+    // much detail anywhere, but hopefully you've got the idea already.
     #[inline(always)]
-    fn update(&mut self, input: T) {
+    fn process_input(&mut self, input: T) -> T {
         let (hi, lo) = nybble_input(input);
         let shuf0 = self.mask0.hi.shuffle_bytes(hi) & self.mask0.lo.shuffle_bytes(lo);
         let shuf1 = self.mask1.hi.shuffle_bytes(hi) & self.mask1.lo.shuffle_bytes(lo);
         let res2 = self.mask2.hi.shuffle_bytes(hi) & self.mask2.lo.shuffle_bytes(lo);
         let res1 = T::right_shift_1(self.prev1, shuf1);
+        let res0 = T::right_shift_2(self.prev0, shuf0);
 
-        self.res0 = T::right_shift_2(self.prev0, shuf0);
         self.prev0 = shuf0;
         self.prev1 = shuf1;
-        self.res12 = res1 & res2;
-    }
-
-    #[inline(always)]
-    fn needs_verify(&self) -> bool {
-        !self.res0.test_zero(self.res12)
-    }
-
-    #[inline(always)]
-    fn result(&self) -> T {
-        self.res0 & self.res12
+        res0 & res1 & res2
     }
 }
 
@@ -261,10 +269,10 @@ impl<T: TeddySIMD> Teddy<T> {
 
         // Do the first iteration of the loop, with an unaligned load.
         let hay = unsafe { T::load_unchecked(haystack, pos) };
-        state.update(hay);
-        if state.needs_verify() {
+        let matches = state.process_input(hay);
+        if matches.is_nonzero() {
             let pos = pos - state.offset();
-            if let Some(m) = self.verify(haystack, pos, state.result()) {
+            if let Some(m) = self.verify(haystack, pos, matches) {
                 return Some(m);
             }
         }
@@ -274,8 +282,8 @@ impl<T: TeddySIMD> Teddy<T> {
         pos = pos + T::block_size() - pos_align;
 
         // Since we shifted by an amount not necessarily equal to block_size, the state preserved
-        // in `state` cannot necessarily be used for the next iteration. Here, we reset the state.
-        // This allows some false positives in the fingerprint matching step, but only on the first
+        // in `state` cannot necessarily be used for the next iteration. By resetting the state, we
+        // allow some false positives in the fingerprint matching step, but only on the first
         // iteration through the inner loop that follows.
         state.reset();
 
@@ -300,20 +308,21 @@ impl<T: TeddySIMD> Teddy<T> {
         // usually false then you shouldn't be using Teddy anyway). Also, we can unroll the inner
         // loop for another little boost.
         let end = len.saturating_sub(2 * T::block_size() - 1);
+        let mut matches: T;
         'outer: loop {
             'inner: loop {
                 if pos >= end { break 'outer; }
 
                 let hay = unsafe { *(haystack.get_unchecked(pos) as *const u8 as *const T) };
-                state.update(hay);
-                if state.needs_verify() {
+                matches = state.process_input(hay);
+                if matches.is_nonzero() {
                     break 'inner;
                 }
                 pos += T::block_size();
 
                 let hay = unsafe { *(haystack.get_unchecked(pos) as *const u8 as *const T) };
-                state.update(hay);
-                if state.needs_verify() {
+                matches = state.process_input(hay);
+                if matches.is_nonzero() {
                     break 'inner;
                 }
                 pos += T::block_size();
@@ -321,7 +330,7 @@ impl<T: TeddySIMD> Teddy<T> {
 
             // If we got here, it means that a fingerprint matched and we need to verify it.
             let start_pos = pos - state.offset();
-            if let Some(m) = self.verify(haystack, start_pos, state.result()) {
+            if let Some(m) = self.verify(haystack, start_pos, matches) {
                 return Some(m);
             }
             pos += T::block_size();
@@ -348,14 +357,14 @@ impl<T: TeddySIMD> Teddy<T> {
         }
     }
 
-    /// Runs the verification procedure on `res` (i.e., `C` from the module
-    /// documentation), where the haystack block starts at `pos` in
-    /// `haystack`.
+    /// Runs the verification procedure on `res` (i.e., `C` from the README). A non-zero byte in
+    /// position `i` of `res` means that a fingerprint matched `haystack` beginning at offset `pos
+    /// + i`.
     ///
-    /// If a match exists, it returns the first one.
+    /// If a match exists, returns the first one.
     #[inline(always)]
     fn verify(&self, haystack: &[u8], pos: usize, res: T) -> Option<Match> {
-        let mut bitfield = res.ne(T::splat(0)).move_mask();
+        let mut bitfield = res.nonzero_bytes();
 
         while bitfield != 0 {
             // The next offset, relative to pos, where some fingerprint matched.
@@ -382,7 +391,7 @@ impl<T: TeddySIMD> Teddy<T> {
         None
     }
 
-    /// Verifies whether any substring in the given bucket matches in haystack
+    /// Verifies whether any substring in the given bucket matches the haystack
     /// at the given starting position.
     #[inline(always)]
     fn verify_bucket(

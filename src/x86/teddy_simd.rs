@@ -31,8 +31,6 @@ use simd::x86::avx::{bool8ix32, i8x32, u8x32, u64x4};
 // Here are some operations that we need but are not (currently) exposed by `simd`.
 extern "platform-intrinsic" {
     fn simd_shuffle16<T, U>(x: T, y: T, idx: [u32; 16]) -> U;
-    #[cfg(target_feature="sse4.1")]
-    fn x86_mm_testz_si128(x: u64x2, y: u64x2) -> i32;
 }
 
 #[cfg(target_feature="avx2")]
@@ -41,12 +39,6 @@ extern "platform-intrinsic" {
     fn simd_shuffle32<T, U>(x: T, y: T, idx: [u32; 32]) -> U;
     fn x86_mm256_shuffle_epi8(x: i8x32, y: i8x32) -> i8x32;
     fn x86_mm256_movemask_epi8(x: i8x32) -> i32;
-    fn x86_mm256_testz_si256(x: u64x4, y: u64x4) -> i32;
-}
-
-pub trait TeddySIMDBool: Clone + Copy + Sized {
-    fn any(self) -> bool;
-    fn move_mask(self) -> u32;
 }
 
 /// This trait contains all the SIMD operations necessary for implementing the Teddy algorithm.
@@ -56,17 +48,11 @@ pub trait TeddySIMD: BitAnd<Output=Self> + Clone + Copy + Debug + Shr<u8, Output
     /// This should probably be an associated const, but those aren't stable.
     fn block_size() -> usize;
 
-    /// The boolean version of this vector.
-    type Bool: TeddySIMDBool;
-
-    fn ne(self, other: Self) -> Self::Bool;
     fn splat(x: u8) -> Self;
     fn extract(self, idx: u32) -> u8;
     fn replace(self, idx: u32, elem: u8) -> Self;
     fn shuffle_bytes(self, indices: Self) -> Self;
-
-    /// Returns true if `self & other` is zero.
-    fn test_zero(self, other: Self) -> bool;
+    fn is_nonzero(self) -> bool;
 
     /// Puts `left` on the left, `right` on the right, then shifts the whole thing by one byte to
     /// the right and returns the right half (so that the right-most byte of `left` will become the
@@ -76,36 +62,27 @@ pub trait TeddySIMD: BitAnd<Output=Self> + Clone + Copy + Debug + Shr<u8, Output
     /// Same as `right_shift_1`, but shifts by 2 bytes.
     fn right_shift_2(left: Self, right: Self) -> Self;
 
+    /// Returns a bitfield indicating which bytes in this vector are non-zero.
+    fn nonzero_bytes(self) -> u32;
+
     /// Creates a new SIMD vector from the elements in `slice` starting at `offset`. `slice` must
     /// have at least the number of elements required to fill a SIMD vector.
     unsafe fn load_unchecked(slice: &[u8], offset: usize) -> Self;
 }
 
 impl TeddySIMD for u8x16 {
-    type Bool = bool8ix16;
-
     #[inline]
     fn block_size() -> usize { 16 }
-    #[inline]
-    fn ne(self, other: Self) -> Self::Bool { u8x16::ne(self, other) }
     #[inline]
     fn splat(x: u8) -> Self { u8x16::splat(x) }
     #[inline]
     fn extract(self, idx: u32) -> u8 { u8x16::extract(self, idx) }
     #[inline]
     fn replace(self, idx: u32, elem: u8) -> Self { u8x16::replace(self, idx, elem) }
-
-    #[cfg(target_feature="sse4.1")]
     #[inline]
-    fn test_zero(self, other: Self) -> bool {
-        unsafe { x86_mm_testz_si128(transmute(self), transmute(other)) != 0 }
-    }
-
-    #[cfg(not(target_feature="sse4.1"))]
+    fn is_nonzero(self) -> bool { bool8ix16::any(u8x16::ne(self, u8x16::splat(0))) }
     #[inline]
-    fn test_zero(self, other: Self) -> bool {
-        (self & other).eq(u8x16::splat(0)).all()
-    }
+    fn nonzero_bytes(self) -> u32 { Sse2Bool8ix16::move_mask(u8x16::ne(self, u8x16::splat(0))) }
 
     #[inline]
     fn right_shift_1(left: Self, right: Self) -> Self {
@@ -135,22 +112,10 @@ impl TeddySIMD for u8x16 {
     }
 }
 
-impl TeddySIMDBool for bool8ix16 {
-    #[inline]
-    fn any(self) -> bool { bool8ix16::any(self) }
-
-    #[inline]
-    fn move_mask(self) -> u32 { Sse2Bool8ix16::move_mask(self) }
-}
-
 #[cfg(target_feature="avx2")]
 impl TeddySIMD for u8x32 {
-    type Bool = bool8ix32;
-
     #[inline]
     fn block_size() -> usize { 32 }
-    #[inline]
-    fn ne(self, other: Self) -> Self::Bool { u8x32::ne(self, other) }
     #[inline]
     fn splat(x: u8) -> Self { u8x32::splat(x) }
     #[inline]
@@ -158,8 +123,11 @@ impl TeddySIMD for u8x32 {
     #[inline]
     fn replace(self, idx: u32, elem: u8) -> Self { u8x32::replace(self, idx, elem) }
     #[inline]
-    fn test_zero(self, other: Self) -> bool {
-        unsafe { x86_mm256_testz_si256(transmute(self), transmute(other)) != 0 }
+    fn is_nonzero(self) -> bool { bool8ix32::any(u8x32::ne(self, u8x32::splat(0))) }
+    #[inline]
+    fn nonzero_bytes(self) -> u32 {
+        let nonzero = u8x32::ne(self, u8x32::splat(0));
+        unsafe { transmute(x86_mm256_movemask_epi8(transmute(nonzero))) }
     }
 
     #[cfg(not(feature="asm"))]
@@ -241,17 +209,6 @@ impl TeddySIMD for u8x32 {
             &mut x as *mut u8x32 as *mut u8,
             32);
         x
-    }
-}
-
-#[cfg(target_feature="avx2")]
-impl TeddySIMDBool for bool8ix32 {
-    #[inline]
-    fn any(self) -> bool { bool8ix32::any(self) }
-
-    #[inline]
-    fn move_mask(self) -> u32 {
-        unsafe { transmute(x86_mm256_movemask_epi8(transmute(self))) }
     }
 }
 

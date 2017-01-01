@@ -32,7 +32,7 @@ If you want more control over the SIMD instruction set that is used, you can
 use instead
 
 ```
-RUSTFLAGS="-C target-feature=+ssse3,+sse4.1,+avx2" cargo build
+RUSTFLAGS="-C target-feature=+ssse3,+avx2" cargo build
 ```
 
 (or some subset of those features -- currently, at least one of `+ssse3` or
