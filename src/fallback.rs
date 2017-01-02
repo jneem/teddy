@@ -3,6 +3,7 @@
 
 use Match;
 
+/// A SIMD accelerated multi substring searcher.
 #[derive(Clone, Debug)]
 pub struct Teddy;
 
