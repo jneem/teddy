@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["Match","All the details for the match that Teddy found."],["Teddy","A SIMD accelerated multi substring searcher."]]});
